@@ -509,7 +509,7 @@ class TPUGKEJob(GKEJob):
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
         else:
             logging.info("Found tier=%s in env. Using spot quota", tier)
-            selector.update({"cloud.google.com/gke-spot": "true"})
+            # selector.update({"cloud.google.com/gke-spot": "true"})
             tolerations.append(
                 {
                     "key": "cloud.google.com/gke-spot",

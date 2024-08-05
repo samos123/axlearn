@@ -96,7 +96,7 @@ gcp = [
 # For TPU training.
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
-    "axlearn[gcp]",
+    "axlearn[core,gcp]",
     "jax[tpu]==0.4.28",  # must be >=0.4.19 for compat with v5p.
 ]
 # Vertex AI tensorboard.

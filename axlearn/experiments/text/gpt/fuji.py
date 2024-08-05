@@ -151,7 +151,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=int(train_batch_size / 4),
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
@@ -165,7 +165,7 @@ def get_trainer_kwargs(
                 # tpu-v4-(1024|2048).
                 ("tpu-v4-.*", mesh_shape_from_axes(data=-1, fsdp=16)),
                 # tpu-v5e.
-                ("tpu-v5litepod-.*", mesh_shape_from_axes(data=-1, fsdp=16)),
+                ("tpu-v5litepod-.*", mesh_shape_from_axes(data=-1, fsdp=256)),
                 # tpu-v5p.
                 ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
                 # H100/A100 80G.

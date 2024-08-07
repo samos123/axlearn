@@ -184,6 +184,7 @@ def get_trainer_kwargs(
                 num_layers=80,
                 hidden_dim=128 * 64,
                 num_heads=64,
+                stack_cfg=RepeatedTransformerLayer.default_config(),
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
                 num_kv_heads=None if version == Version.V1 else 8,
                 rope_theta=rope_theta,

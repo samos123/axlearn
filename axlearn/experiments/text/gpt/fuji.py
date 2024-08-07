@@ -196,7 +196,7 @@ def get_trainer_kwargs(
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
                 # tpu-v5e. step time: TBD.
-                ("tpu-v5litepod-256", mesh_shape_from_axes(fsdp=-1)),
+                ("tpu-v5litepod-256", mesh_shape_from_axes(data=-1, fsdp=256)),
                 # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
                 # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
                 (

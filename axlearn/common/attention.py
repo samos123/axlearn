@@ -49,6 +49,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Se
 
 import jax
 from jax import numpy as jnp
+from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import ops, param_init
 from axlearn.common.base_layer import (
@@ -98,9 +99,6 @@ from axlearn.common.utils import (
     shapes,
     split_prng_key,
 )
-
-# from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
-
 
 NEG_INF = -1e15
 
@@ -3915,10 +3913,9 @@ def build_remat_spec(
         prevent_cse=stack_cfg.klass is StackedTransformerLayer,
         # If we are running inside a jax.lax.scan (Repeated/Pipelined transformers
         # or Repeated Conformers) we can enable common subexpression elimination optimizations.
-        policy=None,
-        # policy=config_for_function(jax_remat_policies.save_only_these_names).set(
-        #     names_which_can_be_saved=checkpoints
-        # ),
+        policy=config_for_function(jax_remat_policies.save_only_these_names).set(
+            names_which_can_be_saved=checkpoints
+        ),
     )
 
 

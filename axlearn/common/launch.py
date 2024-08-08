@@ -46,6 +46,7 @@ MAXTEXT_XLA_FLAGS = [
 libtpu_init_args += MAXTEXT_XLA_FLAGS
 
 os.environ["LIBTPU_INIT_ARGS"] = " ".join(libtpu_init_args)
+print("LIBTPU_INIT_ARGS: ", os.environ["LIBTPU_INIT_ARGS"])
 
 # Set TF_CPP_MIN_LOG_LEVEL to ignore msg like  "PNG warning: iCCP: known incorrect sRGB profile"
 # Reference: https://stackoverflow.com/questions/35869137/avoid-tensorflow-print-on-standard-error

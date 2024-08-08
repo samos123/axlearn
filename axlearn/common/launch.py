@@ -34,6 +34,17 @@ if num_tpu_slices > 1:
         "--xla_tpu_data_parallel_opt_different_sized_ops=true",
     ]
 
+MAXTEXT_XLA_FLAGS = [
+    "--xla_tpu_enable_data_parallel_all_reduce_opt=true",
+    "--xla_tpu_data_parallel_opt_different_sized_ops=true",
+    "--xla_tpu_enable_async_collective_fusion=true",
+    "--xla_tpu_enable_async_collective_fusion_fuse_all_gather=true",
+    "--xla_tpu_enable_async_collective_fusion_multiple_steps=true",
+    "--xla_tpu_overlap_compute_collective_tc=true",
+    "--xla_enable_async_all_gather=true",
+]
+libtpu_init_args += MAXTEXT_XLA_FLAGS
+
 os.environ["LIBTPU_INIT_ARGS"] = " ".join(libtpu_init_args)
 
 # Set TF_CPP_MIN_LOG_LEVEL to ignore msg like  "PNG warning: iCCP: known incorrect sRGB profile"

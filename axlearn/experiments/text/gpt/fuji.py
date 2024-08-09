@@ -215,7 +215,7 @@ def get_trainer_kwargs(
         max_step=trainer_kwargs["max_step"],
         **trainer_kwargs.pop("learner_kwargs"),
     )
-    trainer_kwargs["train_batch_size"] = int(trainer_kwargs["train_batch_size"] / 2)
+    trainer_kwargs["train_batch_size"] = int(trainer_kwargs["train_batch_size"])
     # Remove this before merging, just to make it stop quickly
     trainer_kwargs["max_step"] = 20
     # pylint: enable=use-dict-literal

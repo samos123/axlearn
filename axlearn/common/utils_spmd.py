@@ -11,6 +11,9 @@ import portpicker
 
 _jax_distributed_initialized = False
 
+# TODO Remove this, just for debugging
+logging.getLogger("jax").setLevel(logging.DEBUG)
+
 
 def setup(
     *,

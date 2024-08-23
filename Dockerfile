@@ -98,6 +98,10 @@ COPY *.whl .
 RUN pip install *$LIB_TPU_DATE*.whl
 # Workaround for v6e jax init bug
 ENV JAX_FORCE_TPU_INIT=true
+ENV JAX_PLATFORMS=tpu,cpu
+ENV ENABLE_PJRT_COMPATIBILITY=true
+ENV TPU_SLICE_BUILDER_DUMP_CHIP_FORCE=true
+ENV TPU_SLICE_BUILDER_DUMP_ICI=true
 COPY . .
 
 ################################################################################

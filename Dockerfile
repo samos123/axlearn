@@ -96,6 +96,8 @@ RUN pip install .[core,tpu]
 ENV LIB_TPU_DATE=20240822
 COPY *.whl .
 RUN pip install *$LIB_TPU_DATE*.whl
+# Workaround for v6e jax init bug
+ENV JAX_FORCE_TPU_INIT=true
 COPY . .
 
 ################################################################################

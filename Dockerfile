@@ -93,8 +93,8 @@ ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.h
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN pip install .[core,tpu]
-ENV LIB_TPU_DATE=20240815
-COPY *.whl .
+ENV LIB_TPU_DATE=20240826
+COPY *${LIB_TPU_DATE}*.whl .
 RUN pip install *$LIB_TPU_DATE*.whl
 # Workaround for v6e jax init bug
 ENV JAX_FORCE_TPU_INIT=true

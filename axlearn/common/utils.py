@@ -39,12 +39,12 @@ import jax
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
+from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
-from jax.experimental import maps, mesh_utils, multihost_utils
+from jax.experimental import mesh_utils, multihost_utils
 from jax.sharding import PartitionSpec
-from jax.tree_util import register_pytree_node_class
 
-from axlearn.common import serialization, struct
+from axlearn.common import serialization
 from axlearn.common.config import is_named_tuple
 
 # New code should use Nested[XX] instead of NestedXX.
@@ -106,7 +106,7 @@ class TensorSpec:
 
     @property
     def sharding(self) -> jax.sharding.Sharding:
-        mesh = maps.thread_resources.env.physical_mesh
+        mesh = thread_resources.env.physical_mesh
         return jax.sharding.NamedSharding(mesh, self.mesh_axes)
 
 
@@ -180,41 +180,27 @@ def tree_paths(
         tree_paths.
     """
 
-    if is_leaf is None:
-        is_leaf = lambda x: False
-
-    def visit(tree, prefix):
-        if is_leaf(tree):
-            return prefix
-        elif tree is None:
-            # None is considered part of the tree structure, not a tree leaf.
-            return tree
-        elif hasattr(tree, "items"):
-            return type(tree)(
-                (k, visit(v, _concat(prefix=prefix, suffix=k, separator=separator)))
-                for k, v in tree.items()
-            )
-        elif isinstance(tree, struct.PyTreeNode):
-            # dataclasses.asdict() cannot be used because it recursively converts children to dicts.
-            return type(tree)(
-                **visit(
-                    {field.name: getattr(tree, field.name) for field in dataclasses.fields(tree)},
-                    prefix,
-                )
-            )
-        elif is_named_tuple(tree):
-            return type(tree)(**visit(tree._asdict(), prefix))
-        elif isinstance(tree, (list, tuple)):
-            return type(tree)(
-                [
-                    visit(v, _concat(prefix=prefix, suffix=k, separator=separator))
-                    for k, v in enumerate(tree)
-                ]
-            )
+    def key_entry_to_str(key_entry: KeyEntry) -> str:
+        # Although (e.g.) DictKey does have its own __str__ implementation, calling
+        # str(DictKey('a')) produces "['a']" instead of just "a".
+        if isinstance(key_entry, jax.tree_util.DictKey):
+            key = key_entry.key
+        elif isinstance(key_entry, jax.tree_util.GetAttrKey):
+            key = key_entry.name
+        elif isinstance(key_entry, jax.tree_util.SequenceKey):
+            key = key_entry.idx
+        elif isinstance(key_entry, jax.tree_util.FlattenedIndexKey):
+            key = key_entry.key
         else:
-            return prefix
+            raise RuntimeError(f"Unknown key entry type {type(key_entry)}: {key_entry}.")
 
-    return visit(tree, "")
+        # Use f-string instead of calling str() because it matches the behavior of the previous
+        # implementation and differs from str() for (e.g.) enums.
+        return f"{key}"
+
+    return jax.tree_util.tree_map_with_path(
+        lambda kp, _: separator.join(key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
+    )
 
 
 @dataclasses.dataclass
@@ -238,14 +224,14 @@ def flatten_items(
     return list((pv.path, pv.value) for pv in flat_paths_and_values)
 
 
-@register_pytree_node_class
+@jax.tree_util.register_pytree_with_keys_class
 class VDict(dict):
     """A dict with Tensor leaf nodes whose values should be vectorized."""
 
     def __repr__(self):
         return f"VDict({super().__repr__()})"
 
-    def tree_flatten(self):
+    def tree_flatten_with_keys(self):
         # Convert dict_values and dict_keys to lists to avoid holding reference to the VDict.
         # We sort the keys so that tree_map works with VDicts that have different key orderings,
         # matching jax's behavior for dicts.
@@ -253,7 +239,10 @@ class VDict(dict):
         if not items:
             return ((), ())
         keys, values = zip(*items)
-        return (values, keys)
+        aux = keys
+        keys = [jax.tree_util.DictKey(k) for k in keys]
+        key_values = list(zip(keys, values))
+        return key_values, aux
 
     @classmethod
     def tree_unflatten(cls, keys, values):
@@ -443,7 +432,7 @@ def as_numpy_array(x: Any):
 
 
 def with_sharding_constraint(x, shardings):
-    mesh = jax.experimental.maps.thread_resources.env.physical_mesh  # type: ignore
+    mesh = thread_resources.env.physical_mesh
     if mesh.empty or mesh.size == 1:
         return x
     return jax.lax.with_sharding_constraint(x, shardings)
@@ -543,7 +532,7 @@ def input_partition_spec() -> PartitionSpec:
 
     Must be called within the context of a Mesh.
     """
-    mesh = maps.thread_resources.env.physical_mesh
+    mesh = thread_resources.env.physical_mesh
     return PartitionSpec(
         mesh.axis_names,
     )
@@ -633,7 +622,7 @@ def host_to_global_device_array(
     Raises:
         NotImplementedError: if the given `partition` type is not supported.
     """
-    mesh = maps.thread_resources.env.physical_mesh
+    mesh = thread_resources.env.physical_mesh
     partition_spec = data_partition_type_to_spec(partition)
 
     local_devices = mesh.local_devices

@@ -61,7 +61,7 @@ FROM base AS bastion
 # TODO(markblee): Consider copying large directories separately, to cache more aggressively.
 # TODO(markblee): Is there a way to skip the "production" deps?
 COPY . /root/
-RUN pip install .[core,gcp,vertexai_tensorboard]
+RUN pip install .[core,core,gcp,vertexai_tensorboard]
 
 ################################################################################
 # Dataflow container spec.                                                     #

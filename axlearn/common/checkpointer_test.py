@@ -24,7 +24,7 @@ from jax import numpy as jnp
 from jax.experimental import mesh_utils
 from jax.experimental.array_serialization import serialization as array_serialization
 
-from axlearn.common import checkpointer, serialization, test_utils, utils
+from axlearn.common import serialization, test_utils, utils
 from axlearn.common.array_serialization import BoundedAsyncCheckpointManager
 from axlearn.common.checkpointer import (
     BestMetricPolicy,
@@ -32,12 +32,9 @@ from axlearn.common.checkpointer import (
     CheckpointValidationType,
     EvalMetric,
     TensorStoreStateStorage,
-    _cleanup_checkpoint,
     check_state_structure,
-    checkpoint_paths,
     every_n_steps_and_last_policy,
     every_n_steps_policy,
-    latest_checkpoint_path,
     read_state_spec,
     restore_tf_savables,
     save_tf_savables,
@@ -252,14 +249,14 @@ class CheckpointerTest(test_utils.TestCase):
                 for file in ["test", "index"]:
                     with open(os.path.join(ckpt_paths[-1], file), "w", encoding="utf-8") as f:
                         f.write(str(step))
-            self.assertEqual(latest_checkpoint_path(temp_dir), ckpt_paths[-1])
+            self.assertEqual(Checkpointer.latest_checkpoint_path(temp_dir), ckpt_paths[-1])
             # Simulate a corrupted cleanup on the last ckpt.
-            _cleanup_checkpoint(ckpt_paths[-1], sync=False)
+            Checkpointer.cleanup_checkpoint(ckpt_paths[-1], sync=False)
             # Ensure that the last ckpt still has the "test" file.
             with open(os.path.join(ckpt_paths[-1], "test"), "r", encoding="utf-8") as f:
                 self.assertEqual("2", f.read())
             # Ensure that the last ckpt is considered invalid.
-            self.assertEqual(latest_checkpoint_path(temp_dir), ckpt_paths[0])
+            self.assertEqual(Checkpointer.latest_checkpoint_path(temp_dir), ckpt_paths[0])
 
     @parameterized.parameters(
         # By default, we restore from the latest ckpt, keep the last 3 steps, and every 2 after.
@@ -314,10 +311,10 @@ class CheckpointerTest(test_utils.TestCase):
             if ckpt_paths:
                 ckpt_paths = [os.path.join(temp_dir, f"step_{i:08d}") for i in ckpt_paths]
             else:
-                ckpt_paths = checkpoint_paths(cfg.dir)
+                ckpt_paths = Checkpointer.checkpoint_paths(cfg.dir)
 
-            with mock.patch(f"{checkpointer.__name__}.checkpoint_paths", return_value=ckpt_paths):
-                ckpt.run_garbage_collection()
+            with mock.patch.object(Checkpointer, "checkpoint_paths", return_value=ckpt_paths):
+                ckpt._run_garbage_collection()
 
                 # step=None restores from the latest ckpt.
                 self.assertNestedEqual(
@@ -414,14 +411,14 @@ class CheckpointerTest(test_utils.TestCase):
         # GC thread is not started until the start_gc_thread() call.
         self.assertIsNone(ckpt._gc_thread)
 
-        ckpt.start_gc_thread()
+        ckpt._start_gc_thread()
         self.assertIsNotNone(ckpt._gc_thread)
         ckpt.stop()
         # GC thread is terminated after stop() returns.
         self.assertIsNone(ckpt._gc_thread)
 
         # We can start gc and stop again.
-        ckpt.start_gc_thread()
+        ckpt._start_gc_thread()
         self.assertIsNotNone(ckpt._gc_thread)
         ckpt.stop()
         self.assertIsNone(ckpt._gc_thread)
@@ -445,7 +442,7 @@ class CheckpointerTest(test_utils.TestCase):
         ckpt = _checkpointer_config().instantiate(parent=None)
 
         def run():
-            ckpt.start_gc_thread()
+            ckpt._start_gc_thread()
             raise ValueError("expected error")
 
         # By default, an exception in the main thread does not terminate child threads.
@@ -616,7 +613,7 @@ class CheckpointerTest(test_utils.TestCase):
                         f.write("dummy")
             final_ckpt_path = ckpt_paths[10]
             # Note: step 11 is not complete, so the latest path returns step 10.
-            self.assertEqual(latest_checkpoint_path(td), final_ckpt_path)
+            self.assertEqual(Checkpointer.latest_checkpoint_path(td), final_ckpt_path)
 
     def test_read_state_spec(self):
         mesh_shape = (1, 1)
@@ -643,7 +640,7 @@ class CheckpointerTest(test_utils.TestCase):
             ckpt.save(step=0, state=state0)
             ckpt.wait_until_finished()
             # Tests `read_state_spec`.
-            state_spec = read_state_spec(latest_checkpoint_path(cfg.dir))
+            state_spec = read_state_spec(Checkpointer.latest_checkpoint_path(cfg.dir))
             self.assertNestedEqual(
                 state_spec,
                 jax.tree_util.tree_map(
@@ -671,6 +668,9 @@ class CheckpointerTest(test_utils.TestCase):
 
             def __repr__(self):
                 return f"VDict({super().__repr__()})"
+
+            def tree_flatten_with_keys(self):
+                raise NotImplementedError
 
             def tree_flatten(self):
                 # Convert dict_values and_keys to lists to avoid holding reference to the VDict.
@@ -830,7 +830,7 @@ SWITCHABLE_VDICT_IMPL: Optional[Type[VDict]] = None
 # Subclass VDict so that VDict-specific code works the same with this class.
 # The pytree flattening logic is defined explicitly for this subclass
 # and is not inherited.
-@jax.tree_util.register_pytree_node_class
+@jax.tree_util.register_pytree_with_keys_class
 class SwitchableVDict(VDict):
     """A VDict that can switch its implementation between different implementations.
 
@@ -840,8 +840,16 @@ class SwitchableVDict(VDict):
     def __repr__(self):
         return SWITCHABLE_VDICT_IMPL.__repr__(self)
 
-    def tree_flatten(self):
-        return SWITCHABLE_VDICT_IMPL.tree_flatten(self)
+    def tree_flatten_with_keys(self):
+        try:
+            return SWITCHABLE_VDICT_IMPL.tree_flatten_with_keys(self)
+        except NotImplementedError:
+            # tree_paths() no longer generates named keys for pytrees that don't register
+            # their child keys, so we simulate the child keys from the old implementation
+            # of tree_paths().
+            values, keys = SWITCHABLE_VDICT_IMPL.tree_flatten(self)
+            key_value = [(jax.tree_util.DictKey(k), v) for k, v in zip(keys, values)]
+            return key_value, keys
 
     @classmethod
     def tree_unflatten(cls, keys, values):

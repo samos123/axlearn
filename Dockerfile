@@ -102,6 +102,8 @@ ENV JAX_PLATFORMS=tpu,cpu
 ENV ENABLE_PJRT_COMPATIBILITY=true
 ENV TPU_SLICE_BUILDER_DUMP_CHIP_FORCE=true
 ENV TPU_SLICE_BUILDER_DUMP_ICI=true
+# Temporarily set this flag to solve nullptr issue
+ENV ENABLE_TPUNETD_CLIENT=false
 COPY . .
 
 ################################################################################

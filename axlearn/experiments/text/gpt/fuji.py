@@ -222,7 +222,7 @@ def get_trainer_kwargs(
         **trainer_kwargs.pop("learner_kwargs"),
     )
     # Remove this before merging, just to make it stop quickly
-    trainer_kwargs["max_step"] = 120
+    trainer_kwargs["max_step"] = 22
     # pylint: enable=use-dict-literal
     return trainer_kwargs
 

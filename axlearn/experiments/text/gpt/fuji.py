@@ -151,6 +151,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
+            # Global batch size by default is 1024 for fuji v2
             train_batch_size=train_batch_size,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
@@ -194,7 +195,8 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            # fuji v2 has 1024 global batch size
+            train_batch_size=int(train_batch_size / 4),
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -219,7 +221,6 @@ def get_trainer_kwargs(
         max_step=trainer_kwargs["max_step"],
         **trainer_kwargs.pop("learner_kwargs"),
     )
-    trainer_kwargs["train_batch_size"] = int(trainer_kwargs["train_batch_size"] / 4)
     # Remove this before merging, just to make it stop quickly
     trainer_kwargs["max_step"] = 120
     # pylint: enable=use-dict-literal

@@ -216,6 +216,10 @@ def get_trainer_kwargs(
         raise NotImplementedError(f"Unknown model size {model_size}.")
 
     print("trainer_kwargs:", trainer_kwargs)
+
+    # Remove this before merging, just to make it stop quickly
+    trainer_kwargs["max_step"] = 100
+
     model_kwargs = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
     trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
@@ -223,8 +227,6 @@ def get_trainer_kwargs(
         max_step=trainer_kwargs["max_step"],
         **trainer_kwargs.pop("learner_kwargs"),
     )
-    # Remove this before merging, just to make it stop quickly
-    trainer_kwargs["max_step"] = 30
     # pylint: enable=use-dict-literal
     return trainer_kwargs
 

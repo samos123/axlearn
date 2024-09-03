@@ -45,6 +45,12 @@ MAXTEXT_XLA_FLAGS = [
 ]
 libtpu_init_args += MAXTEXT_XLA_FLAGS
 
+V6E_XLA_FLAGS = [
+    # Victor ran this and said good perf
+    "--xla_tpu_scoped_vmem_limit_kib=98304"
+]
+libtpu_init_args += V6E_XLA_FLAGS
+
 os.environ["LIBTPU_INIT_ARGS"] = " ".join(libtpu_init_args)
 print("LIBTPU_INIT_ARGS: ", os.environ["LIBTPU_INIT_ARGS"], file=sys.stderr)
 

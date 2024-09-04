@@ -188,7 +188,7 @@ def get_trainer_kwargs(
                 num_kv_heads=None if version == Version.V1 else 8,
                 # Kelvin gets OOM with ffn_dim set on v5e single slice.
                 # However, this is needed for proper Lllama v2 70B.
-                ffn_dim=scaled_hidden_dim(scale=3.5),
+                # ffn_dim=scaled_hidden_dim(scale=3.5),
                 rope_theta=rope_theta,
                 flash_attention=flash_attention,
                 remat_offload_dst="pinned_host",

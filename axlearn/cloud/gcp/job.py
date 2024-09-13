@@ -437,6 +437,10 @@ class TPUGKEJob(GKEJob):
             )
 
         env_vars = {**cfg.env_vars}
+
+        # This is only needed during private preview with tpunet DaemonSet
+        env_vars["VBAR_CONTROL_SERVICE_URL"] = "127.0.0.1:8353"
+
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 

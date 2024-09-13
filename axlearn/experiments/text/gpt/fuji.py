@@ -169,6 +169,7 @@ def get_trainer_kwargs(
                 # tpu-v5e.
                 ("tpu-v5litepod-.*", mesh_shape_from_axes(data=-1, fsdp=256)),
                 # tpu-v6e.
+                ("tpu-v6e-16", mesh_shape_from_axes(data=-1, fsdp=16)),
                 ("tpu-v6e-.*", mesh_shape_from_axes(data=-1, fsdp=256)),
                 # tpu-v5p.
                 ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),

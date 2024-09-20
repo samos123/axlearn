@@ -294,6 +294,7 @@ def get_trainer_kwargs(
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
     model_kwargs = trainer_kwargs.pop("model_kwargs")
+    trainer_kwargs["max_step"] = 1006
     model_kwargs.setdefault("vocab_size", vocab_size)
     trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
     trainer_kwargs["learner_cfg"] = adamw_decoupled_learner_config(

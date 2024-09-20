@@ -780,14 +780,14 @@ class GPUGKEJob(GKEJob):
         env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
 
         default_xla_flags = [
-            "--xla_gpu_enable_latency_hiding_scheduler=true",
-            # Allows combining multiple all reduce into single all reduce.
-            "--xla_gpu_all_reduce_contiguous",
-            # Increase combine threshold to 1GB for improved performance.
-            # A3 and TCPX performs bad with smaller message sizes.
-            "--xla_gpu_all_reduce_combine_threshold_bytes=1073741824",
-            "--xla_gpu_all_gather_combine_threshold_bytes=1073741824",
-            "--xla_gpu_reduce_scatter_combine_threshold_bytes=1073741824",
+            # "--xla_gpu_enable_latency_hiding_scheduler=true",
+            ## Allows combining multiple all reduce into single all reduce.
+            # "--xla_gpu_all_reduce_contiguous",
+            ## Increase combine threshold to 1GB for improved performance.
+            ## A3 and TCPX performs bad with smaller message sizes.
+            # "--xla_gpu_all_reduce_combine_threshold_bytes=1073741824",
+            # "--xla_gpu_all_gather_combine_threshold_bytes=1073741824",
+            # "--xla_gpu_reduce_scatter_combine_threshold_bytes=1073741824",
         ]
         env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
 

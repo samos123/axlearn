@@ -286,7 +286,7 @@ def get_trainer_kwargs(
                 # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
                 # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-megagpu-8g)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
                 ),
             ),
@@ -294,7 +294,6 @@ def get_trainer_kwargs(
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
     model_kwargs = trainer_kwargs.pop("model_kwargs")
-    trainer_kwargs["max_step"] = 1006
     model_kwargs.setdefault("vocab_size", vocab_size)
     trainer_kwargs["model_cfg"] = model_config(**model_kwargs)
     trainer_kwargs["learner_cfg"] = adamw_decoupled_learner_config(

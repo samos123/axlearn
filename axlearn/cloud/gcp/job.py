@@ -746,7 +746,7 @@ class GPUGKEJob(GKEJob):
             "-c",
             "set -ex; chmod 755 /fts/entrypoint_rxdm_container.sh; \n\
             /fts/entrypoint_rxdm_container.sh --num_hops=2 --num_nics=8 \
-                --uid= --alsologtostderr &;\n\
+                --uid= --alsologtostderr &\n\
             while [ ! -f /run/tcpx/terminated ]; do sleep 10; done;",
         ]
 

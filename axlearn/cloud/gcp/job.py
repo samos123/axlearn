@@ -801,6 +801,8 @@ class GPUGKEJob(GKEJob):
 
         env_vars.update(
             {
+                # Try to fix GPU OOM on Fuji v2 70B with per device batch 2.
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.50",
                 "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
                 "NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY": "/dev/aperture_devices",
                 "NCCL_FASTRAK_CTRL_DEV": "eth0",

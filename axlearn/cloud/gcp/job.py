@@ -801,6 +801,8 @@ class GPUGKEJob(GKEJob):
 
         env_vars.update(
             {
+                # Disable tracer due to issue with CuDNN
+                "JAX_CHECK_TRACER_LEAKS": "false",
                 "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
                 "NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY": "/dev/aperture_devices",
                 "NCCL_FASTRAK_CTRL_DEV": "eth0",

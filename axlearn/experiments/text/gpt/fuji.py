@@ -288,7 +288,21 @@ def get_trainer_kwargs(
                 # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-megagpu-8g)-(512|1024)",
-                    mesh_shape_from_axes(data=-1, fsdp=64),
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=offload_dots_saveable_policy,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
                 ),
             ),
         )

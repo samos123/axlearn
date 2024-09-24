@@ -108,9 +108,6 @@ ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases
 RUN pip install .[core,gpu]
 COPY . .
 
-# Troubleshooting CUDNN issue
-ENV JAX_TRACEBACK_FILTERING=off
-
 ################################################################################
 # Final target spec.                                                           #
 ################################################################################

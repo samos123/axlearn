@@ -802,7 +802,7 @@ class GPUGKEJob(GKEJob):
         env_vars.update(
             {
                 # Needed to help resolve GPU OOM on fuji v2 70B
-                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.90",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.65",
                 "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
                 "NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY": "/dev/aperture_devices",
                 "NCCL_FASTRAK_CTRL_DEV": "eth0",

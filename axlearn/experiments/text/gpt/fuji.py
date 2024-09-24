@@ -260,7 +260,7 @@ def get_trainer_kwargs(
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
             # train_batch_size=train_batch_size,
-            train_batch_size=512,
+            train_batch_size=128,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -290,7 +290,7 @@ def get_trainer_kwargs(
                 # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-megagpu-8g)-(512|1024)",
-                    mesh_shape_from_axes(data=-1, fsdp=64),
+                    mesh_shape_from_axes(data=-1, fsdp=128),
                 ),
             ),
         )

@@ -123,6 +123,7 @@ gpu = [
     "triton==2.1.0",
     "jax[cuda12_pip]==0.4.30",
     "nvidia-cudnn-cu12==9.3.0.75",
+    "nvidia-cuda-nvrtc-cu12==12.6.68",
 ]
 # Open API inference.
 open_api = [

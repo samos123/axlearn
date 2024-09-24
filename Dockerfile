@@ -105,6 +105,7 @@ FROM nvcr.io/nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04 as gpu
 # Copy from original base
 RUN apt-get update
 RUN apt-get install -y apt-transport-https ca-certificates gnupg curl gcc g++ python3 python3-venv
+RUN ln -s /usr/bin/python3 /usr/bin/python
 
 # Install git.
 RUN apt-get install -y git

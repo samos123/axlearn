@@ -832,6 +832,7 @@ class GPUGKEJob(GKEJob):
                 # TCPX requires disabling PXN.
                 # "NCCL_P2P_PXN_LEVEL": "0",
                 # Improves performance but can be tweaked.
+                "NCCL_BUFFSIZE": "4194304",
                 "NCCL_DYNAMIC_CHUNK_SIZE": "524288",
                 "NCCL_P2P_NET_CHUNKSIZE": "524288",
                 "NCCL_P2P_PCI_CHUNKSIZE": "524288",

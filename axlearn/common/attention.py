@@ -3951,23 +3951,16 @@ def build_remat_spec(
         ffn_name = stack_cfg.layer.feed_forward.klass.__name__
         checkpoints.extend([f"{ffn_name}.{el}" for el in ["activation", "linear2"]])
 
-    # policy = config_for_function(jax_remat_policies.save_only_these_names).set(
-    #     names_which_can_be_saved=checkpoints
-    # )
-    # if offload_dst:
-    #     policy = config_for_function(jax_remat_policies.save_and_offload_only_these_names).set(
-    #         names_which_can_be_saved=[],
-    #         names_which_can_be_offloaded=checkpoints,
-    #         offload_src="device",
-    #         offload_dst=offload_dst,
-    #     )
-    offload_dst = "pinned_host"
-    policy = config_for_function(jax_remat_policies.save_and_offload_only_these_names).set(
-        names_which_can_be_saved=[],
-        names_which_can_be_offloaded=checkpoints,
-        offload_src="device",
-        offload_dst=offload_dst,
+    policy = config_for_function(jax_remat_policies.save_only_these_names).set(
+        names_which_can_be_saved=checkpoints
     )
+    if offload_dst:
+        policy = config_for_function(jax_remat_policies.save_and_offload_only_these_names).set(
+            names_which_can_be_saved=[],
+            names_which_can_be_offloaded=checkpoints,
+            offload_src="device",
+            offload_dst=offload_dst,
+        )
 
     return RematSpec(
         prevent_cse=stack_cfg.klass is StackedTransformerLayer,

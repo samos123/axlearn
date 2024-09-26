@@ -167,7 +167,6 @@ class WindowedAttention(MultiheadAttention):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
-        segment_ids: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> MultiheadAttention.Output:
         """Computes self-windowed attention for the given query and attention logit biases.
@@ -179,8 +178,6 @@ class WindowedAttention(MultiheadAttention):
             key:   an optional Tensor of shape [batch, source_length, source_dim].
             value: an optional Tensor of shape [batch, source_length, source_dim].
             attention_logit_biases:  See ``On attention logit biases`` in the file comments.
-            segment_ids: Not used. See `On segment_ids` in
-                MultiheadAttention's file comments.
             return_aux: See comments in MultiheadAttention.Output.
 
         Returns:
@@ -190,7 +187,7 @@ class WindowedAttention(MultiheadAttention):
         Raises:
             ValueError: If key & value are an invalid combination.
         """
-        del segment_ids
+
         if key is not None or value is not None:
             raise ValueError("Both key and value must be None for WindowedAttention")
         cfg = self.config
@@ -258,7 +255,6 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
         target: Tensor,
         source: Optional[Tensor] = None,
         attention_logit_biases: Optional[Tensor] = None,
-        segment_ids: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
     ) -> TransformerAttentionLayer.Output:
         """Computes attention with target as query and source as key and value.
@@ -267,7 +263,6 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
             target: a Tensor of shape [batch, target_length, target_dim].
             source: None, uses norm(target) as source for self-attention
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
-            segment_ids: Not used. See `On segment_ids` in MultiheadAttention's file comments.
             return_aux: See comments in TransformerAttentionLayer.Output.
 
         Returns:
@@ -293,7 +288,6 @@ class WindowedSelfAttentionLayer(TransformerAttentionLayer):
                 key=source,
                 value=source,
                 attention_logit_biases=attention_logit_biases,
-                segment_ids=segment_ids,
                 return_aux=return_aux,
             )
             x = atten_output.data

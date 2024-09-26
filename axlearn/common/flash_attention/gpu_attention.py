@@ -740,10 +740,6 @@ def cudnn_dot_product_attention(
     _check_local_compute_capability((80, 90))
     mask_type = MaskType.NO_MASK if not causal else MaskType.CAUSAL
 
-    if bias is None:
-        bias = jnp.zeros(0, dtype=query.dtype)
-    if mask is None:
-        mask = jnp.zeros(0, dtype=query.dtype)
     output = dot_product_attention(
         query=query,
         key=key,

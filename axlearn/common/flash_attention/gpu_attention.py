@@ -744,16 +744,12 @@ def cudnn_dot_product_attention(
         bias = jnp.zeros(0, dtype=query.dtype)
     if mask is None:
         mask = jnp.zeros(0, dtype=query.dtype)
-    q_seqlen = jnp.zeros(0, dtype=query.dtype)
-    kv_seqlen = jnp.zeros(0, dtype=query.dtype)
     output = dot_product_attention(
         query=query,
         key=key,
         value=value,
         bias=bias,
         mask=mask,
-        q_seqlen=q_seqlen,
-        kv_seqlen=kv_seqlen,
         scale=softmax_scale,
         seed=seed,
         dropout_rate=dropout_rate,

@@ -3925,7 +3925,7 @@ def build_remat_spec(
 
     if feed_forward and hasattr(stack_cfg.layer, "feed_forward"):
         ffn_name = stack_cfg.layer.feed_forward.klass.__name__
-        checkpoints.extend([f"{ffn_name}.{el}" for el in ["activation", "linear1", "linear2"]])
+        checkpoints.extend([f"{ffn_name}.{el}" for el in ["activation", "linear2"]])
 
     policy = config_for_function(jax_remat_policies.save_only_these_names).set(
         names_which_can_be_saved=checkpoints

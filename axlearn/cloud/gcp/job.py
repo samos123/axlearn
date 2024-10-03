@@ -810,7 +810,7 @@ class GPUGKEJob(GKEJob):
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "NVTE_FUSED_ATTN": "1",
                 # Needed to help resolve GPU OOM on fuji v2 70B
-                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.95",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
                 "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
                 "NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY": "/dev/aperture_devices",

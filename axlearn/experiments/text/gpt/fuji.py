@@ -244,6 +244,8 @@ def get_trainer_kwargs(
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
+                # tpu-v6e.
+                ("tpu-v6e-.*", mesh_shape_from_axes(data=-1, fsdp=256)),
             ),
         )
     elif model_size == "70B":
@@ -285,6 +287,8 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
+                # tpu-v6e.
+                ("tpu-v6e-.*", mesh_shape_from_axes(data=-1, fsdp=256)),
                 # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
                 # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
                 (

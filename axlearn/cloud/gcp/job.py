@@ -606,6 +606,8 @@ class TPUGKEJob(GKEJob):
                 containers=[self._build_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
+                hostNetwork=True,
+                dnsPolicy="ClusterFirstWithHostNet",
             ),
         )
 

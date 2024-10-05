@@ -963,6 +963,10 @@ class GPUGKEJob(GKEJob):
         containers = [self._build_main_container(), self._build_a3_mega_sidecar_container()]
         init_containers = [self._build_a3_init_container()]
 
+        scheduling_gates = [
+            {"name": f"gke.io/topology-aware-auto-{cfg.name}"},
+        ]
+
         return dict(
             metadata=dict(annotations=annotations),
             spec=dict(
@@ -975,6 +979,7 @@ class GPUGKEJob(GKEJob):
                 containers=containers,
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
+                scheduling_gates=scheduling_gates,
             ),
         )
 

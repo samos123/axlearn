@@ -245,7 +245,24 @@ def get_trainer_kwargs(
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
                 # tpu-v6e.
-                ("tpu-v6e-.*", mesh_shape_from_axes(data=-1, fsdp=256)),
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=offload_dots_saveable_policy,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
             ),
         )
     elif model_size == "70B":
@@ -262,7 +279,7 @@ def get_trainer_kwargs(
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
             # train_batch_size=train_batch_size,
-            train_batch_size=512,
+            train_batch_size=1024,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -289,7 +306,24 @@ def get_trainer_kwargs(
                     ),
                 ),
                 # tpu-v6e.
-                ("tpu-v6e-.*", mesh_shape_from_axes(data=-1, fsdp=256)),
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=offload_dots_saveable_policy,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
                 # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
                 # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
                 (

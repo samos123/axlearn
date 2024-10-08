@@ -801,6 +801,8 @@ class GPUGKEJob(GKEJob):
 
         env_vars.update(
             {
+                # More debugging.
+                "TF_CPP_MIN_LOG_LEVEL": "0",
                 # Enable auto PGLE available in jax 0.4.33
                 "JAX_ENABLE_PGLE": "True",
                 "JAX_PGLE_PROFILING_RUNS": "3",
@@ -833,7 +835,7 @@ class GPUGKEJob(GKEJob):
                 "NCCL_ALGO": "Ring,Tree",
                 # TCPX only supports Simple protocol.
                 "NCCL_PROTO": "Simple",
-                "NCCL_DEBUG": "WARN",
+                "NCCL_DEBUG": "INFO",
                 "NCCL_DEBUG_SUBSYS": "INIT,GRAPH,ENV,TUNING,NET,VERSION",
                 # Enable GPU Direct RDMA when GPU and NIC are same PCI switch.
                 "NCCL_NET_GDR_LEVEL": "PIX",

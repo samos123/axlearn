@@ -100,6 +100,7 @@ gcp = [
 tpu = [
     "axlearn[gcp]",
     "jax[tpu]==0.4.33",  # must be >=0.4.19 for compat with v5p.
+    "libtpu-nightly",
 ]
 # Vertex AI tensorboard.
 vertexai_tensorboard = [

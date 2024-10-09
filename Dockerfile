@@ -89,13 +89,13 @@ FROM base AS tpu
 RUN apt-get install -y google-perftools
 
 # TODO(markblee): Support extras.
-ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
+ENV PIP_FIND_LINKS="https://storage.googleapis.com/jax-releases/libtpu_releases.html https://storage.googleapis.com/jax-releases/jax_nightly_releases.html"
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN pip install .[core,tpu]
-ENV LIB_TPU_DATE=20241008
-COPY *${LIB_TPU_DATE}*.whl .
-RUN pip install *$LIB_TPU_DATE*.whl
+# ENV LIB_TPU_DATE=20241008
+# COPY *${LIB_TPU_DATE}*.whl .
+# RUN pip install *$LIB_TPU_DATE*.whl
 COPY . .
 
 ################################################################################

@@ -121,7 +121,7 @@ dataflow = [
 # GPU custom kernel dependency.
 gpu = [
     "triton==2.1.0",
-    "jax[cuda12]==0.4.33",
+    "jax[cuda12_pip]==0.4.33",
     "nvidia-cudnn-cu12==9.3.0.75",
     "nvidia-cuda-nvrtc-cu12==12.6.68",
 ]

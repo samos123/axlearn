@@ -86,7 +86,8 @@ ENTRYPOINT ["/opt/apache/beam/boot"]
 
 FROM base AS tpu
 
-RUN apt-get install -y google-perftools
+RUN apt update -y && apt-get install -y google-perftools && \
+    rm -rf /var/lib/apt/lists/*
 
 # TODO(markblee): Support extras.
 ENV PIP_FIND_LINKS="https://storage.googleapis.com/jax-releases/libtpu_releases.html https://storage.googleapis.com/jax-releases/jax_nightly_releases.html"

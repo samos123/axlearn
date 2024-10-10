@@ -615,6 +615,7 @@ class TPUGKEJob(GKEJob):
                 volumes=volumes,
                 hostNetwork=True,
                 dnsPolicy="ClusterFirstWithHostNet",
+                priorityClassName="very-high",
             ),
         )
 

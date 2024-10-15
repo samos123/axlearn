@@ -776,7 +776,7 @@ class GPUGKEJob(GKEJob):
         ]
 
         env_vars: dict[str, str] = {}
-        env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
+        env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8888"
         env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
 
         default_xla_flags = [
@@ -884,7 +884,7 @@ class GPUGKEJob(GKEJob):
             name=cfg.name,
             image=self._bundler.id(cfg.name),
             ports=[
-                dict(containerPort=8080),  # Port for MXLA coordinator.
+                dict(containerPort=8888),  # Port for MXLA coordinator.
             ],
             securityContext=dict(privileged=True),
             # TODO(markblee): Improve SIGTERM behavior for command.
@@ -982,6 +982,7 @@ class GPUGKEJob(GKEJob):
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
                 scheduling_gates=scheduling_gates,
+                priortyClassName="very-high",
             ),
         )
 

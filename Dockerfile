@@ -102,8 +102,8 @@ COPY . .
 # FROM base AS gpu
 # nvcr.io is unreliable :(
 # FROM nvcr.io/nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04 as gpu
-# FROM nvidia/cuda:12.6.1-cudnn-devel-ubuntu22.04 as gpu
-FROM nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04 as gpu
+# FROM nvidia/cuda:12.2.2-cudnn8-devel-ubuntu22.04 as gpu
+FROM nvidia/cuda:12.6.1-cudnn-devel-ubuntu22.04 as gpu
 
 # Copy from original base
 RUN apt-get update

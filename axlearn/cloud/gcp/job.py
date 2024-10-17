@@ -757,6 +757,7 @@ class GPUGKEJob(GKEJob):
             command=command,
             env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
             volumeMounts=volume_mounts,
+            restartPolicy="Always",
         )
 
     def _build_main_container(self) -> Nested[Any]:
@@ -962,8 +963,8 @@ class GPUGKEJob(GKEJob):
             "kubectl.kubernetes.io/default-container": cfg.name,
         }
 
-        containers = [self._build_main_container(), self._build_a3_mega_sidecar_container()]
-        init_containers = [self._build_a3_init_container()]
+        containers = [self._build_main_container()]
+        init_containers = [self._build_a3_init_container(), self._build_a3_mega_sidecar_container()]
 
         scheduling_gates = [
             {"name": f"gke.io/topology-aware-auto-{cfg.name}"},

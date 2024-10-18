@@ -455,6 +455,13 @@ class TPUGKEJob(GKEJob):
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 
+        debugging_env_flags = {
+            "TPU_MIN_LOG_LEVEL": "0",
+            "TF_CPP_MIN_LOG_LEVEL": "0",
+            "TPU_VMODULE": "real_program_continuator=1",
+        }
+        env_vars.update(debugging_env_flags)
+
         resources = {"limits": {"google.com/tpu": system.chips_per_vm}}
         # Set request memory by host machine type.
         machine_memory_gi = GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS.get(

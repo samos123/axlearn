@@ -44,6 +44,17 @@ def default_xla_options(
             xla_enable_async_all_gather="true",  # Allow async all-gather.
             xla_enable_async_collective_permute="true",  # Allow async collective permute.
         )
+    if version == "v6e":
+        options.update(
+            # improved performance for v6e
+            xla_tpu_scoped_vmem_limit_kib="98304",
+            # maxtext xla flags
+            xla_tpu_enable_async_collective_fusion="true",
+            xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",
+            xla_tpu_enable_async_collective_fusion_multiple_steps="true",
+            xla_tpu_overlap_compute_collective_tc="true",
+            xla_enable_async_all_gather="true",
+        )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
         options.update(
@@ -57,7 +68,7 @@ def default_xla_options(
 
     # Validate options. Will never fail if this function is implemented correctly.
     for k, v in options.items():
-        assert v in [True, False, "true", "false"], (k, v)
+        assert v in [True, False, "true", "false", "98304"], (k, v)
 
     return options
 

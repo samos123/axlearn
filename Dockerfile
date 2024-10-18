@@ -100,9 +100,9 @@ RUN pip install .[core,tpu]
 # RUN pip install -U --pre libtpu-nightly requests \
 #     -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html \
 #     -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-ENV LIB_TPU_DATE=20240912
-COPY *${LIB_TPU_DATE}*.whl .
-RUN pip install *$LIB_TPU_DATE*.whl
+# ENV LIB_TPU_DATE=20240912
+# COPY *${LIB_TPU_DATE}*.whl .
+# RUN pip install *$LIB_TPU_DATE*.whl
 COPY . .
 
 ################################################################################

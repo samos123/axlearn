@@ -115,4 +115,4 @@ def infer_tpu_version(tpu_type: str) -> str:
     return tpu_version
 
 
-_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p")
+_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e")

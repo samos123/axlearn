@@ -716,7 +716,7 @@ def adamw_optimizer(
     weight_decay_per_param_scale: Optional[Callable[[NestedOptParam], Any]] = None,
     mu_dtype: Optional[jnp.dtype] = None,
     adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
-    offload: bool = False,
+    offload: bool = True,
 ) -> PartitionedGradientTransformation:
     """AdamW optimizer with parameter scaling.
 

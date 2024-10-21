@@ -194,6 +194,7 @@ def adam_partition(
 
         def update_fn(updates, states, params):
             del params
+            # pylint: disable=not-callable
             return compute_on("device_host")(jax.jit(prev_update))(updates, states, None)
 
         base = optax.GradientTransformation(base.init, update_fn)
@@ -715,7 +716,7 @@ def adamw_optimizer(
     weight_decay_per_param_scale: Optional[Callable[[NestedOptParam], Any]] = None,
     mu_dtype: Optional[jnp.dtype] = None,
     adam_update_transformation: Optional[ConfigOr[PartitionedGradientTransformation]] = None,
-    offload: bool = True,
+    offload: bool = False,
 ) -> PartitionedGradientTransformation:
     """AdamW optimizer with parameter scaling.
 
@@ -1439,6 +1440,7 @@ def skip_and_clip_by_global_norm(
         )
 
         # new_inner_state is optimizer state on CPU.
+        # pylint: disable=not-callable
         @compute_on("device_host")
         @partial(jax.jit, donate_argnums=(1, 2))
         def replace_fn(is_valid_step, new_inner_state, inner_state):
@@ -1949,11 +1951,13 @@ def adastar_optimizer(
                 pps_tree,
             )
         )
-        # Do not return raw_updates when it's no needed to reduce D2H transfers when offloading is active.
+        # Do not return raw_updates when it's no needed to reduce D2H
+        # transfers when offloading is active.
         if verbosity <= 0:
             raw_updates = None
         return raw_updates, smoothed_updates, _AdastarState(count=incremented_count, pps=pps_tree)
 
+    # pylint: disable=not-callable
     def update_fn(grads: NestedTensor, state: _AdastarState, params: NestedOptParam):
         if params is None:
             raise ValueError("param is None")
@@ -1961,16 +1965,19 @@ def adastar_optimizer(
         if not offload:
             raw_updates, smoothed_updates, updated_state = core_computation(grads, state)
         else:
-            USE_SHARD_MAP = True
-            if USE_SHARD_MAP:
+            use_shard_map = True
+            if use_shard_map:
                 _, smoothed_updates, updated_state = shard_map(
+                    # pylint: disable=not-callable
                     compute_on("device_host")(jax.jit(core_computation)),
                     mesh=thread_resources.env.physical_mesh,
                     in_specs=(update_specs, state_specs),
                     out_specs=(None, update_specs, state_specs),
                 )(grads, state)
             else:
+                # pylint: disable=E1102
                 _, smoothed_updates, updated_state = compute_on("device_host")(
+                    # pylint: disable=not-callable
                     jax.jit(core_computation)
                 )(grads, state)
         # Add param and update stats to summaries.

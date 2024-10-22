@@ -347,7 +347,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=8e-5, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=64,
+            train_batch_size=512,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -357,7 +357,7 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64, model=4)
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=512)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={

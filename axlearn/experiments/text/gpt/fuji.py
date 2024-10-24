@@ -341,7 +341,7 @@ def get_trainer_kwargs(
                 hidden_dim=53248,
                 num_heads=128,
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
-                num_kv_heads=None if version == Version.V1 else 8,
+                num_kv_heads=8,
                 rope_theta=rope_theta,
                 flash_attention=flash_attention,
             ),

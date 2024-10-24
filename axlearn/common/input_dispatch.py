@@ -162,6 +162,8 @@ class InputDispatcher(Module):
             return copy.deepcopy(logical_feed_batch)
         feed_physical_batch_size = self.feed_physical_batch_size
         feed_logical_batch_size = self.feed_logical_batch_size
+        print("feed_physical_Batch_size", feed_physical_batch_size)
+        print("feed_logical_batch_size", feed_logical_batch_size)
 
         def pad_to_physical_batch_size(x: Tensor):
             if x.ndim < 1 or x.shape[0] != feed_logical_batch_size:

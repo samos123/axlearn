@@ -21,6 +21,7 @@ from jax.sharding import PartitionSpec
 from axlearn.common import (
     base_model,
     causal_lm,
+    input_dispatch,
     input_fake,
     input_lm,
     input_tf_data,
@@ -673,6 +674,10 @@ def get_trainer_config_fn(
         cfg.train_dtype = STEP_DTYPE
         cfg.input = input_tf_data.Input.default_config().set(
             is_training=True,
+            input_dispatcher=input_dispatch.InputDispatcher.default_config().set(
+                global_logical_batch_size=train_batch_size,
+                logical_feed_indices=list(range(0, 64, 4)),
+            ),
             source=train_input_source,
             processor=config_for_function(input_tf_data.identity),
             batcher=config_for_function(input_tf_data.batch).set(

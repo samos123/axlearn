@@ -46,3 +46,19 @@ class TrainerConfigTest(TestCase):
         self.assertEqual(cfg.mesh_axis_names, MESH_AXIS_NAMES)
         self.assertNotIn("pipeline", cfg.batch_axis_names)
         self.assertNotIn("model", cfg.batch_axis_names)
+
+    def test_per_device_batch_less_than_0(self):
+        config_fn = get_trainer_config_fn(
+            model_cfg=DummyForwardModel.default_config(),
+            learner_cfg=Learner.default_config(),
+            max_step=1,
+            train_batch_size=16,
+            train_input_source=config_for_function(fake_text_source),
+            evalers={},
+            mesh_shape=(1,) * len(MESH_AXIS_NAMES),
+        )
+        cfg: SpmdTrainer.Config = config_fn()
+        cfg.input.set(name="test").instantiate(parent=None)
+        self.assertEqual(cfg.mesh_axis_names, MESH_AXIS_NAMES)
+        self.assertNotIn("pipeline", cfg.batch_axis_names)
+        self.assertNotIn("model", cfg.batch_axis_names)

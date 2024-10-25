@@ -815,11 +815,11 @@ def batch(
         logical_feed_indices = range(jax.process_count())
 
     num_logical_feeds = len(logical_feed_indices)
-    if global_logical_batch_size % num_logical_feeds != 0:
-        raise ValueError(
-            f"global_logical_batch_size ({global_logical_batch_size}) must be divisible by "
-            f"the number of logical data feeds ({num_logical_feeds})."
-        )
+    # if global_logical_batch_size % num_logical_feeds != 0:
+    #     raise ValueError(
+    #         f"global_logical_batch_size ({global_logical_batch_size}) must be divisible by "
+    #         f"the number of logical data feeds ({num_logical_feeds})."
+    #     )
 
     def fn(ds: tf.data.Dataset) -> tf.data.Dataset:
         if not is_training:

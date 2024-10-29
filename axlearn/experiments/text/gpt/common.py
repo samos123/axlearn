@@ -287,7 +287,9 @@ def model_config(
     layer_cfg.self_attention.structure = atten_structure
     layer_cfg.self_attention.attention.atten_logit_cap = atten_logit_cap
     if stack_cfg.klass is RepeatedTransformerLayer:
-        update_model_remat_config(stack_cfg=stack_cfg, layer_cfg=layer_cfg)
+        update_model_remat_config(
+            stack_cfg=stack_cfg, layer_cfg=layer_cfg, offload_dst="pinned_host"
+        )
     # Stack.
     transformer_cfg = stack_cfg.set(num_layers=num_layers, layer=layer_cfg)
     decoder_cfg = Decoder.default_config().set(

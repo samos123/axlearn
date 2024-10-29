@@ -475,7 +475,6 @@ class Decoder(DecodingMixin, BaseLayer):
         cached_states: Optional[NestedTensor] = None,
     ) -> tuple[Optional[NestedTensor], Tensor]:
         x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
-        x = self._remat_name(x, "decoder_input")
         if mode == ForwardMode.FORWARD:
             transformer_state, x = None, self.transformer(
                 x,
@@ -559,6 +558,7 @@ class Decoder(DecodingMixin, BaseLayer):
                 logits: A float Tensor of shape [batch_size, target_len, num_classes], where
                     num_classes depends on the configured lm_head.
         """
+        input_ids = self._remat_name(input_ids, "decoder_input")
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
             input_ids=input_ids,

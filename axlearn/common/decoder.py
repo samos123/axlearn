@@ -559,7 +559,6 @@ class Decoder(DecodingMixin, BaseLayer):
                     num_classes depends on the configured lm_head.
         """
 
-        input_ids = self._remat_name(input_ids, "decoder_input")
         _, output = self._forward_for_mode(
             mode=ForwardMode.FORWARD,
             input_ids=input_ids,

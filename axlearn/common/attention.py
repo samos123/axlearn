@@ -4126,7 +4126,7 @@ def build_remat_spec(
     if stack_cfg.klass is PipelinedTransformerLayer:
         return None
 
-    checkpoints = []
+    checkpoints = ["decoder_input"]
     if self_attention:
         attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
         checkpoints.extend(

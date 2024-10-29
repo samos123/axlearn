@@ -279,7 +279,6 @@ class Model(BaseModel):
         input_segment_ids: Optional[Tensor] = input_batch.get("input_segment_ids")
         input_positions: Optional[Tensor] = input_batch.get("input_positions")
         # Decoder hidden states: [batch_size, target_len, hidden_dim].
-        input_ids = self._remat_name(input_ids, "decoder_input")
         decoder_output = self.decoder(
             input_ids=input_ids,
             token_type_ids=token_type_ids,

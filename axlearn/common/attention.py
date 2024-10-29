@@ -3972,6 +3972,7 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         data: Tensor,
         **layer_kwargs,
     ) -> TransformerLayer.Output:
+        data = self._remat_name(data, "input_repeat")
         return self.repeat(data, **layer_kwargs)
 
     def init_states(self, *args: Any, **kwargs: Any) -> NestedTensor:
@@ -4126,7 +4127,8 @@ def build_remat_spec(
     if stack_cfg.klass is PipelinedTransformerLayer:
         return None
 
-    checkpoints = ["decoder_input"]
+    # Might need to move this to a separate rematSpec inside Decoder.
+    checkpoints = ["input_repeat"]
     if self_attention:
         attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
         checkpoints.extend(

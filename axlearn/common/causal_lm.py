@@ -119,6 +119,9 @@ class Model(BaseModel):
         """
         predictions = self.predict(input_batch)
         aux_outputs = {**predictions}
+        aux_outputs["hidden_states"] = self._remat_name(
+            aux_outputs["hidden_states"], "input_repeat"
+        )
         # [batch source_length, vocab_size]
         loss = None
         target_labels: Tensor = input_batch.get("target_labels")

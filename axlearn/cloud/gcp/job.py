@@ -720,7 +720,8 @@ class TPUGKEJob(GKEJob):
                 volumes=volumes,
                 hostNetwork=True,
                 dnsPolicy="ClusterFirstWithHostNet",
-                priorityClassName="very-high",
+                # In case you see preemptions from other xpk jobs.
+                # priorityClassName="very-high",
             ),
         )
 

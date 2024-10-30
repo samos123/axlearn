@@ -73,7 +73,6 @@ class TransformerTextEmbeddings(BaseLayer):
             x += self.pos_emb(positions)
         if self.config.norm is not None:
             x = self.norm(x)
-        x = self._remat_name(x, "activation_inputs")
         x = self.dropout(x)
         return x
 
@@ -86,6 +85,7 @@ class TransformerTextEmbeddings(BaseLayer):
         Returns:
             A float Tensor of shape [batch_size, seq_len, cfg.token_emb.num_embeddings]
         """
+        x = self._remat_name(x, "activation_inputs")
         cfg = self.config
         with child_context("token_emb", module=self.token_emb):
             logits = self.token_emb.attend(x)

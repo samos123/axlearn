@@ -2993,6 +2993,7 @@ class TransformerFeedForwardLayer(BaseLayer):
             self._add_tensor_stats("linear2_outputs", x)
             return x
 
+        inputs = self._remat_name(inputs, "activation_inputs")
         self._add_tensor_stats("inputs", inputs)
 
         remat_pt1 = "activation"
@@ -4128,7 +4129,7 @@ def build_remat_spec(
         return None
 
     # Might need to move this to a separate rematSpec inside Decoder.
-    checkpoints = ["input_repeat"]
+    checkpoints = ["activation_inputs"]
     if self_attention:
         attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
         checkpoints.extend(

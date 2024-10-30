@@ -117,7 +117,6 @@ class Model(BaseModel):
                 hidden_states: a float Tensor of shape [batch_size, seq_len, hidden_dim].
                 per_label_loss: a float Tensor of shape [batch_size, seq_len].
         """
-        input_batch["input_ids"] = self._remat_name(input_batch["input_ids"], "input_repeat")
         predictions = self.predict(input_batch)
         aux_outputs = {**predictions}
         # [batch source_length, vocab_size]

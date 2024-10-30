@@ -73,8 +73,8 @@ class TransformerTextEmbeddings(BaseLayer):
             x += self.pos_emb(positions)
         if self.config.norm is not None:
             x = self.norm(x)
-        x = self.dropout(x)
         x = self._remat_name(x, "activation_inputs")
+        x = self.dropout(x)
         return x
 
     def attend(self, x: Tensor) -> Tensor:

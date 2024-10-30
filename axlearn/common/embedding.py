@@ -63,6 +63,7 @@ class TransformerTextEmbeddings(BaseLayer):
             A float Tensor of shape [batch_size, seq_len, hidden_dim]
         """
         x = self.token_emb(inputs)
+        x = self._remat_name(x, "activation_inputs")
         if self.config.type_emb is not None:
             if token_type_ids is None:
                 token_type_ids = jnp.zeros_like(inputs)

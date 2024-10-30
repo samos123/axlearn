@@ -2993,7 +2993,6 @@ class TransformerFeedForwardLayer(BaseLayer):
             self._add_tensor_stats("linear2_outputs", x)
             return x
 
-        inputs = self._remat_name(inputs, "activation_inputs")
         self._add_tensor_stats("inputs", inputs)
 
         remat_pt1 = "activation"

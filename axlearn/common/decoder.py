@@ -475,6 +475,7 @@ class Decoder(DecodingMixin, BaseLayer):
         cached_states: Optional[NestedTensor] = None,
     ) -> tuple[Optional[NestedTensor], Tensor]:
         x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
+        x = self._remat_name(x, "activation_inputs")
         if mode == ForwardMode.FORWARD:
             transformer_state, x = None, self.transformer(
                 x,

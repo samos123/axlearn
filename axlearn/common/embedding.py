@@ -65,6 +65,7 @@ class TransformerTextEmbeddings(BaseLayer):
         """
 
         jax.debug.print("textembedding.inputs.1: ", inputs.shape)
+        inputs = self._remat_name(inputs, "activation_inputs_before")
         x = self.token_emb(inputs)
         jax.debug.print("textembedding.x.1: ", x.shape)
         x = self._remat_name(x, "activation_inputs")

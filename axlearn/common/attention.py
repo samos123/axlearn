@@ -4131,6 +4131,7 @@ def build_remat_spec(
     # Might need to move this to a separate rematSpec inside Decoder.
     checkpoints = [
         "activation_inputs",
+        "activation_inputs_before",
         "token_emb_logits",
         "token_emb_logits_x",
         "activation_inputs_before_dropout",

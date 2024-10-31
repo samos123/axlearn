@@ -2986,7 +2986,6 @@ class TransformerFeedForwardLayer(BaseLayer):
 
     def forward(self, inputs: Tensor) -> Tensor:
         cfg = self.config
-        jax.debug.print(f"{self.__class__}.input", input.shape)
 
         def _linear2(x):
             """Applies linear2, optionally logging RMS norm of the output."""

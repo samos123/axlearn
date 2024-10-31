@@ -357,7 +357,7 @@ def get_trainer_kwargs(
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=126,
-                hidden_dim=53248,
+                hidden_dim=16384,
                 num_heads=128,
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
                 num_kv_heads=8,

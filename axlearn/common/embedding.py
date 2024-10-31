@@ -63,9 +63,7 @@ class TransformerTextEmbeddings(BaseLayer):
             A float Tensor of shape [batch_size, seq_len, hidden_dim]
         """
 
-        inputs = self._remat_name(inputs, "activation_inputs_before")
         x = self.token_emb(inputs)
-        x = self._remat_name(x, "activation_inputs")
         if self.config.type_emb is not None:
             if token_type_ids is None:
                 token_type_ids = jnp.zeros_like(inputs)
@@ -76,7 +74,6 @@ class TransformerTextEmbeddings(BaseLayer):
             x += self.pos_emb(positions)
         if self.config.norm is not None:
             x = self.norm(x)
-        x = self._remat_name(x, "activation_inputs_before_dropout")
         x = self.dropout(x)
         return x
 
@@ -91,9 +88,7 @@ class TransformerTextEmbeddings(BaseLayer):
         """
         cfg = self.config
         with child_context("token_emb", module=self.token_emb):
-            x = self._remat_name(x, "token_emb_logits_x")
             logits = self.token_emb.attend(x)
-            logits = self._remat_name(logits, "token_emb_logits")
             # Applies soft logits capping if set.
             if not cfg.soft_cap_logits or cfg.soft_cap_logits <= 0.0:
                 return logits

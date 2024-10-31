@@ -376,7 +376,7 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64, model=4)
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=512)
                             ),
                         ],
                     ),

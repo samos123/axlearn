@@ -34,7 +34,6 @@ def default_xla_options(
     options = dict(
         xla_tpu_spmd_rng_bit_generator_unsafe=True,  # SPMD partition-aware RngBitGenerator.
         xla_tpu_enable_latency_hiding_scheduler="true",  # Try to schedule ops efficiently.
-        xla_dump_hlo_as_text="true",
         # xla_tpu_perform_spmd_cse_prevention="false",
         # b/229655601: prevent OOM on gpt2-small-repeat.
     )

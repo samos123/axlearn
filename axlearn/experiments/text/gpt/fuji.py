@@ -369,6 +369,7 @@ def get_trainer_kwargs(
                 "text_embeddings_attend_logits",
                 "text_embeddings_cap",
                 "text_embeddings_pos_emb",
+                "text_embeddings_pos_norm",
             ],
             offload_src="device",
             offload_dst="pinned_host",

@@ -75,6 +75,7 @@ class TransformerTextEmbeddings(BaseLayer):
             x += self.pos_emb(positions)
             x = self._remat_name(x, "text_embeddings_pos_emb")
         if self.config.norm is not None:
+            x = self._remat_name(x, "text_embeddings_pos_norm")
             x = self.norm(x)
         x = self.dropout(x)
         return x

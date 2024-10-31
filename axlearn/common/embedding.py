@@ -91,6 +91,7 @@ class TransformerTextEmbeddings(BaseLayer):
         cfg = self.config
         with child_context("token_emb", module=self.token_emb):
             logits = self.token_emb.attend(x)
+            logits = self._remat_name(logits, "text_embeddings_attend_logits")
             # Applies soft logits capping if set.
             if not cfg.soft_cap_logits or cfg.soft_cap_logits <= 0.0:
                 return logits

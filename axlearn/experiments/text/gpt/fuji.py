@@ -366,6 +366,7 @@ def get_trainer_kwargs(
                 "transformer_forward_data",
                 "text_embeddings_x",
                 "text_embeddings_attend_x",
+                "text_embeddings_attend_logits",
             ],
             offload_src="device",
             offload_dst="pinned_host",

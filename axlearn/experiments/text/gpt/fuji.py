@@ -354,6 +354,14 @@ def get_trainer_kwargs(
             ),
         )
     elif model_size == "405B":
+        remat_policy_405b = config_for_function(
+            jax_remat_policies.save_and_offload_only_these_names
+        ).set(
+            names_which_can_be_saved=[],
+            names_which_can_be_offloaded=["decoder_input"],
+            offload_src="device",
+            offload_dst="pinned_host",
+        )
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=126,
@@ -383,7 +391,7 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
-                                        policy=jax_remat_policies.nothing_saveable,
+                                        policy=remat_policy_405b,
                                     ),
                                 }
                             ),

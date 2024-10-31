@@ -96,4 +96,6 @@ class TransformerTextEmbeddings(BaseLayer):
             if not cfg.soft_cap_logits or cfg.soft_cap_logits <= 0.0:
                 return logits
             cap = jnp.array(cfg.soft_cap_logits, dtype=logits.dtype)
-            return cap * jnp.tanh(logits / cap)
+            out = cap * jnp.tanh(logits / cap)
+            out = self._remat_name(out, "text_embeddings_cap")
+            return out

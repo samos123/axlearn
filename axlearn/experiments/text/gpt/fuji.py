@@ -358,7 +358,7 @@ def get_trainer_kwargs(
             jax_remat_policies.save_and_offload_only_these_names
         ).set(
             names_which_can_be_saved=[],
-            names_which_can_be_offloaded=["decoder_input", "activation"],
+            names_which_can_be_offloaded=["decoder_input", "activation", "decoder_x_after_emb"],
             offload_src="device",
             offload_dst="pinned_host",
         )
@@ -375,7 +375,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=8e-5, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=256,
+            train_batch_size=512,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(

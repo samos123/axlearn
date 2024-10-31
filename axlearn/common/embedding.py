@@ -87,6 +87,7 @@ class TransformerTextEmbeddings(BaseLayer):
         Returns:
             A float Tensor of shape [batch_size, seq_len, cfg.token_emb.num_embeddings]
         """
+        x = self._remat_name(x, "text_embeddings_attend_x")
         cfg = self.config
         with child_context("token_emb", module=self.token_emb):
             logits = self.token_emb.attend(x)

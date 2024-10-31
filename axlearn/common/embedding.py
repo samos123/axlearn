@@ -3,6 +3,7 @@
 """Embedding layers."""
 from typing import Optional
 
+import jax
 from jax import numpy as jnp
 
 from axlearn.common.base_layer import BaseLayer
@@ -62,7 +63,10 @@ class TransformerTextEmbeddings(BaseLayer):
         Returns:
             A float Tensor of shape [batch_size, seq_len, hidden_dim]
         """
+
+        jax.debug.print("textembedding.inputs.1: ", inputs.shape)
         x = self.token_emb(inputs)
+        jax.debug.print("textembedding.x.1: ", x.shape)
         x = self._remat_name(x, "activation_inputs")
         if self.config.type_emb is not None:
             if token_type_ids is None:

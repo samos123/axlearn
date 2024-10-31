@@ -363,6 +363,7 @@ def get_trainer_kwargs(
                 "activation",
                 "decoder_x_after_emb",
                 "lm_head_x",
+                "transformer_forward_data",
             ],
             offload_src="device",
             offload_dst="pinned_host",

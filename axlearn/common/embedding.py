@@ -73,6 +73,7 @@ class TransformerTextEmbeddings(BaseLayer):
             if positions is None:
                 positions = jnp.arange(x.shape[1])
             x += self.pos_emb(positions)
+            x = self._remat_name(x, "text_embeddings_pos_emb")
         if self.config.norm is not None:
             x = self.norm(x)
         x = self.dropout(x)

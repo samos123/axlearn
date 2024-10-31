@@ -4129,7 +4129,12 @@ def build_remat_spec(
         return None
 
     # Might need to move this to a separate rematSpec inside Decoder.
-    checkpoints = ["activation_inputs", "token_emb_logits", "token_emb_logits_x"]
+    checkpoints = [
+        "activation_inputs",
+        "token_emb_logits",
+        "token_emb_logits_x",
+        "activation_inputs_before_dropout",
+    ]
     if self_attention:
         attention_name = stack_cfg.layer.self_attention.attention.klass.__name__
         checkpoints.extend(

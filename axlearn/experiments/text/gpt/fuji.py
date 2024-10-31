@@ -379,6 +379,14 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64 * 2, model=4)
                             ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=jax_remat_policies.nothing_saveable,
+                                    ),
+                                }
+                            ),
                         ],
                     ),
                 ),

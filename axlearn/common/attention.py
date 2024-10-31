@@ -3973,6 +3973,7 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         data: Tensor,
         **layer_kwargs,
     ) -> TransformerLayer.Output:
+        data = self._remat_name(data, "repeated_transformer_data")
         return self.repeat(data, **layer_kwargs)
 
     def init_states(self, *args: Any, **kwargs: Any) -> NestedTensor:
@@ -3986,6 +3987,7 @@ class RepeatedTransformerLayer(BaseStackedTransformerLayer):
         **layer_kwargs,
     ) -> tuple[list[NestedTensor], TransformerLayer.Output]:
         print("data.shape prefill_states: ", data.shape)
+        data = self._remat_name(data, "repeated_transformer_prefill")
         repeat_cached_states, output = self.repeat.prefill_states(
             time_step=time_step, data=data, **layer_kwargs
         )

@@ -358,7 +358,7 @@ def get_trainer_kwargs(
             jax_remat_policies.save_and_offload_only_these_names
         ).set(
             names_which_can_be_saved=[],
-            names_which_can_be_offloaded=["decoder_input"],
+            names_which_can_be_offloaded=["decoder_input", "activation"],
             offload_src="device",
             offload_dst="pinned_host",
         )

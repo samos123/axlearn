@@ -372,6 +372,7 @@ def get_trainer_kwargs(
                 "text_embeddings_pos_norm",
                 "repeated_transformer_data",
                 "repeated_transformer_prefill",
+                "transformer_repeat",
             ],
             offload_src="device",
             offload_dst="pinned_host",

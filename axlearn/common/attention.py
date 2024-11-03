@@ -3831,6 +3831,7 @@ class _TransformerRepeat(Repeat):
             ValueError: If `mode` is unsupported.
         """
         cfg = self.config
+        data = self._remat_name(data, "transformer_repeat")
 
         if cached_states is not None:
             for path, value in flatten_items(cached_states):

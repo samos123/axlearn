@@ -377,6 +377,7 @@ def get_trainer_kwargs(
             offload_src="device",
             offload_dst="pinned_host",
         )
+        print("printing for pylint ignore", remat_policy_405b)
         trainer_kwargs = dict(
             model_kwargs=dict(
                 num_layers=126,
@@ -406,7 +407,7 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
-                                        policy=remat_policy_405b,
+                                        policy=offload_dots_saveable_policy,
                                     ),
                                 }
                             ),

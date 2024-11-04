@@ -36,6 +36,7 @@ def default_xla_options(
         xla_tpu_enable_latency_hiding_scheduler="true",  # Try to schedule ops efficiently.
         xla_tpu_perform_spmd_cse_prevention="false",
         # b/229655601: prevent OOM on gpt2-small-repeat.
+        xla_dump_to="/tmp/hlo_dump",
     )
     if version == "v4":
         options.update(

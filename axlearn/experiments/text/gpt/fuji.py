@@ -18,7 +18,7 @@ from typing import Any, Optional, Union
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
-from axlearn.common.attention import (
+from axlearn.common.attention import (  # StackedTransformerLayer,
     BaseStackedTransformerLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
@@ -26,7 +26,6 @@ from axlearn.common.attention import (
     MultiheadAttention,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
-    StackedTransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
@@ -392,7 +391,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=8e-5, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=512,
+            train_batch_size=256,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -402,7 +401,7 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64, model=4)
                             ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
@@ -488,7 +487,7 @@ def model_config(
         hidden_dim=hidden_dim,
         num_heads=num_heads,
         vocab_size=vocab_size,
-        stack_cfg=stack_cfg if stack_cfg is not None else StackedTransformerLayer.default_config(),
+        stack_cfg=stack_cfg if stack_cfg is not None else RepeatedTransformerLayer.default_config(),
         activation_fn=activation_fn,
         ffn_dim=ffn_dim,
         normalization=RMSNorm.default_config().set(eps=1e-5, forward_dtype=None),

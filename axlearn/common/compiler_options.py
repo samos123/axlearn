@@ -88,8 +88,6 @@ def default_xla_options(
             # though, may make the scheduler weighting too much on the memory usage instead
             # of latency side.
             xla_latency_hiding_scheduler_rerun="1",
-            # sparse core offloading
-            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.

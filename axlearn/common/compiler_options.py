@@ -87,7 +87,7 @@ def default_xla_options(
             # limit is already set too low. Cutting the memory limit to 90% of previous one
             # though, may make the scheduler weighting too much on the memory usage instead
             # of latency side.
-            xla_latency_hiding_scheduler_rerun="1",
+            xla_latency_hiding_scheduler_rerun="2",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.

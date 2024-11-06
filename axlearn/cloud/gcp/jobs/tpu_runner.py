@@ -573,6 +573,7 @@ def with_tpu_training_defaults(
         TPU_TYPE=infer_tpu_type(flag_values.instance_type),
         NUM_TPU_SLICES=flag_values.num_replicas,
         XLA_FLAGS=f"--xla_dump_to=/output/{cfg.name}/xla",
+        TPU_PREMAPPED_BUFFER_SIZE="4294967296",
         TF_CPP_MIN_LOG_LEVEL=0,
         # Necessary for surfacing FATAL TPU errors.
         TPU_STDERR_LOG_LEVEL=0,

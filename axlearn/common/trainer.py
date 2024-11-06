@@ -1029,11 +1029,7 @@ class SpmdTrainer(Module):
             jit_train_step = self._jit_train_step or self._pjit_train_step()
             # Note(Jan 2022):
             # pjit currently requires all parameters to be specified as positional args.
-            # Debugging activation tensor offload
-            traced = jit_train_step.trace(trainer_state, input_batch)
-            print("Yash offloading\n", traced.jaxpr)
-            lowered_train_step = traced.lower()
-            # lowered_train_step = jit_train_step.lower(trainer_state, input_batch)
+            lowered_train_step = jit_train_step.lower(trainer_state, input_batch)
             return lowered_train_step.compile(compiler_options=compiler_options)
 
     def _train_step(

@@ -384,21 +384,54 @@ def adamw_decoupled_learner_config(
         # Decay to this fraction of the peak_lr.
         alpha=alpha,
     )
-    optimizer_cfg = config_for_function(optimizers.chain).set(
-        args=[
-            config_for_function(optimizers.clip_by_global_norm).set(max_norm=1),
-            config_for_function(optimizers.adamw_decoupled_optimizer).set(
-                learning_rate=peak_lr,
-                b1=b1,
-                b2=b2,
-                eps=eps,
-                update_schedule=update_schedule,
-                weight_decay=weight_decay,
-                weight_decay_per_param_scale=None,
-                adam_update_transformation=adam_update_transformation,
-            ),
-        ]
-    )
+    """Bugs for weight-only offloading:
+    jax/jaxlib: 0.4.35
+    accelerator: v5p-8
+    tpu_post_fusion_tiling_assignment.cc:481] Check failed: Shape::Equal().IgnoreTailPaddingAlignmentInElements()( leaf_to_shape, leaf->shape())
+    Unexpected unequal host memory space shapes: f32[3,1024,32,128]{1,2,3,0:T(8,128)S(5)} f32[3,1024,32,128]{3,2,1,0:T(8,128)S(5)}
+    """
+    USE_ADASTAR = False
+    USE_SKIP = False
+    if USE_ADASTAR:
+        optimizer = config_for_function(optimizers.adastar_optimizer).set(
+            learning_rate=peak_lr,
+            # adafactor does not apply smoothing on gradients (but on raw updates).
+            gradient_ema_decay=None,
+            gradient_ema_debias=None,
+            gradient_square_ema_decay=b2,
+            gradient_square_ema_debias=True,
+            eps=0,
+            # adafactor eps is applied on the square.
+            eps_square=1e-30,
+            # Clipping is applied on raw updates by per-param norm (not global norm).
+            raw_update_clipping_threshold=1.0,
+            # Smoothing is applied on raw updates.
+            update_ema_decay=b1,
+            # ... but without debiasing (!).
+            update_ema_debias=False,
+            weight_decay=weight_decay,
+            update_schedule=update_schedule,
+            adam_update_transformation=adam_update_transformation,
+        )
+    else:
+        optimizer = config_for_function(optimizers.adamw_decoupled_optimizer).set(
+            learning_rate=peak_lr,
+            b1=b1,
+            b2=b2,
+            eps=eps,
+            update_schedule=update_schedule,
+            weight_decay=weight_decay,
+            weight_decay_per_param_scale=None,
+            adam_update_transformation=adam_update_transformation,
+        )
+    if USE_SKIP:
+        optimizer_cfg = config_for_function(optimizers.skip_and_clip_by_global_norm).set(
+            inner=optimizer, drop_norm=100, max_norm=1
+        )
+    else:
+        optimizer_cfg = config_for_function(optimizers.chain).set(
+            args=[config_for_function(optimizers.clip_by_global_norm).set(max_norm=1), optimizer]
+        )
     return learner.Learner.default_config().set(optimizer=optimizer_cfg)
 
 

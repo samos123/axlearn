@@ -715,7 +715,7 @@ class TPUGKEJob(GKEJob):
                 },
                 tolerations=tolerations,
                 containers=[self._build_container()],
-                # initContainers=[self._build_uploader_container()],
+                initContainers=[self._build_uploader_container()],
                 serviceAccountName=cfg.service_account,
                 volumes=volumes,
                 hostNetwork=True,

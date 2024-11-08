@@ -360,10 +360,10 @@ def get_trainer_kwargs(
             names_which_can_be_saved=[],
             names_which_can_be_offloaded=[
                 "FlashAttention.q_proj",
-                "FlashAttention.k_proj",
+                # "FlashAttention.k_proj",
                 "FlashAttention.v_proj",
                 # "FlashAttention.context",
-                # "FlashAttention.o_proj",
+                "FlashAttention.o_proj",
                 # "decoder_input",
                 # "activation",
                 # "decoder_x_after_emb",

@@ -363,7 +363,7 @@ def get_trainer_kwargs(
                 "FlashAttention.k_proj",
                 "FlashAttention.v_proj",
                 # "FlashAttention.context",
-                "FlashAttention.o_proj",
+                # "FlashAttention.o_proj",
                 # "decoder_input",
                 # "activation",
                 # "decoder_x_after_emb",

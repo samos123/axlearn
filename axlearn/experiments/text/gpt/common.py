@@ -321,7 +321,7 @@ def model_config(
         cfg.decoder.transformer.layer,
         batch_axis_names=batch_axis_names,
         fsdp_axis_names=("expert", "fsdp", "seq"),
-        tp_axis_names=("fsdp", "model"),
+        tp_axis_names="model",
         seq_axis_names="seq",
     )
     cfg.decoder.logits_partition_spec = (batch_axis_names, "seq", "model")

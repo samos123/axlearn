@@ -364,6 +364,7 @@ def get_trainer_kwargs(
                 "FlashAttention.v_proj",
                 "FlashAttention.context",
                 "FlashAttention.o_proj",
+                "TransformerFeedForwardLayer.activation",
                 # "decoder_input",
                 # "activation",
                 # "decoder_x_after_emb",

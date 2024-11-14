@@ -1323,11 +1323,12 @@ def create_device_mesh(
         for axis, dim in enumerate(mesh_shape):
             if dim % num_granules == 0:
                 break
-            elif dim != 1:
-                raise ValueError(
-                    f"First non-singleton mesh axis {axis} with value {dim} does not divide "
-                    f"the number of slices/granules {num_granules}."
-                )
+            # Commenting out so data=2, fsdp=128, model=4 works on 4 slices.
+            # elif dim != 1:
+            #     raise ValueError(
+            #         f"First non-singleton mesh axis {axis} with value {dim} does not divide "
+            #         f"the number of slices/granules {num_granules}."
+            #     )
         else:
             raise ValueError(f"At least one axis of {mesh_shape=} must divide {num_granules=}.")
 

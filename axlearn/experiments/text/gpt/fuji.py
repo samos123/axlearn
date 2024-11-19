@@ -19,7 +19,7 @@ import jax
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
-from axlearn.common.attention import (
+from axlearn.common.attention import (  # StackedTransformerLayer,
     BaseStackedTransformerLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
@@ -27,7 +27,6 @@ from axlearn.common.attention import (
     MultiheadAttention,
     RepeatedTransformerLayer,
     RoFormerQKVLinear,
-    StackedTransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
@@ -380,7 +379,6 @@ def get_trainer_kwargs(
                 num_kv_heads=8,
                 rope_theta=rope_theta,
                 flash_attention=flash_attention,
-                stack_cfg=StackedTransformerLayer.default_config(),
             ),
             learner_kwargs=dict(peak_lr=8e-5, weight_decay=0.1),
             max_sequence_length=max_sequence_length,

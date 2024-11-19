@@ -360,9 +360,9 @@ def get_trainer_kwargs(
         ).set(
             names_which_can_be_saved=[],
             names_which_can_be_offloaded=[
-                "FlashAttention.q_proj",
-                "FlashAttention.k_proj",
-                "FlashAttention.v_proj",
+                # "FlashAttention.q_proj",
+                # "FlashAttention.k_proj",
+                # "FlashAttention.v_proj",
                 "TransformerLayer.input",
             ],
             offload_src="device",

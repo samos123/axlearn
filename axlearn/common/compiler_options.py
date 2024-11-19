@@ -98,6 +98,7 @@ def default_xla_options(
             xla_sc_enable_instruction_fusion="false",
             xla_sc_disjoint_spmem="false",
             xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            xla_sc_allow_large_tensors="true",
         )
         options["2a886c8_chip_config_name"] = "megachip_tccontrol"
 

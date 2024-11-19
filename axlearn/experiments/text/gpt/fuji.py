@@ -67,7 +67,7 @@ class Version(enum.Enum):
 VOCAB_SIZE = {
     Version.V1: 32 * 1024,
     Version.V2: 32 * 1024,
-    Version.V3: 128256,
+    Version.V3: 128 * 1024,
 }
 
 

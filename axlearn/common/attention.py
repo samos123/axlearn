@@ -3170,8 +3170,7 @@ class TransformerLayer(BaseTransformerLayer):
         Raises:
             ValueError: If `mode` is unsupported.
         """
-        # data = self._remat_name(data, "transformer_forward_data")
-        data = jax.ad_checkpoint.checkpoint_name(data, "transformer_forward_data")
+        data = self._remat_name(data, "input")
         self.vlog(3, "transformer.input=%s", data.sum())
         self_attention_return_aux = set()
         cross_attention_return_aux = set()

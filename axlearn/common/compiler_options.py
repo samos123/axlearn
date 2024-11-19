@@ -94,7 +94,7 @@ def default_xla_options(
             xla_sc_disable_megacore_partitioning="true",
             xla_tpu_use_tc_device_shape_on_sc="true",
             tpu_use_continuations="true",
-            xla_jf_crs_combiner_threshold_count="2",
+            xla_jf_crs_combiner_threshold_count="10",
             xla_sc_enable_instruction_fusion="false",
             xla_sc_disjoint_spmem="false",
             xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",

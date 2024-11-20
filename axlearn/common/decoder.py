@@ -475,7 +475,6 @@ class Decoder(DecodingMixin, BaseLayer):
         cached_states: Optional[NestedTensor] = None,
     ) -> tuple[Optional[NestedTensor], Tensor]:
         x = self.emb(inputs=input_ids, token_type_ids=token_type_ids, positions=positions)
-        x = self._remat_name(x, "decoder_x_after_emb")
         if mode == ForwardMode.FORWARD:
             transformer_state, x = None, self.transformer(
                 x,
@@ -745,5 +744,4 @@ class LmHead(BaseLayer):
         Returns:
             A float Tensor of shape [batch_size, seq_len, vocab_size].
         """
-        x = self._remat_name(x, "lm_head_x")
         return jnp.einsum("bsh,vh->bsv", x, self.parameters["weight"])

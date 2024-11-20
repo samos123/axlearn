@@ -78,7 +78,7 @@ def default_xla_options(
             # scheduler. The scheduler favors more on less memory usage when it's under
             # memory pressure, instead of hiding latency by overlapping more computations
             # and communications.
-            xla_tpu_scheduler_percent_shared_memory_limit="100",
+            xla_tpu_scheduler_percent_shared_memory_limit="90",
             # Flag controlling the number of times the scheduler is run if the scheduled
             # peak memory usage exceeds the initial memory limit, by setting memory limit
             # to 90% of the previous memory limit each time. Default value is 1. Sometimes

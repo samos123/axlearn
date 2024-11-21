@@ -96,7 +96,7 @@ ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.h
 RUN pip install .[core,tpu]
 # Install Nightly and use a stamp to trigger a rebuild of cached layer
 # ENV STAMPY_STAMP=nov-19
-RUN pip install -U --pre jax jaxlib==0.4.36.dev20241117 libtpu requests -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+RUN pip install -U --pre jax==0.4.36.dev20241117 jaxlib==0.4.36.dev20241117 requests -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 COPY . .
 
 ################################################################################

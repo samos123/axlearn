@@ -15,10 +15,11 @@ import functools
 import itertools
 from typing import Any, Optional, Union
 
+import jax
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
-from axlearn.common.attention import (
+from axlearn.common.attention import (  # StackedTransformerLayer,
     BaseStackedTransformerLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
@@ -54,7 +55,7 @@ from axlearn.experiments.text.gpt.common import model_config as common_model_con
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
+MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B", "405B")
 
 
 class Version(enum.Enum):
@@ -92,18 +93,22 @@ TOTAL_TOKENS = {
         "test": 1 * (1024**4),  # 1T tokens
         "7B": 1 * (1024**4),  # 1T tokens
         "70B": int(1.4 * (1024**4)),  # 1.4T tokens
+        "405B": int(1.4 * (1024**4)),  # 1.4T tokens
     },
     Version.V2: {
         "test": 2 * (1024**4),  # 2T tokens
         "7B": 2 * (1024**4),  # 2T tokens
         "70B": 2 * (1024**4),  # 2T tokens
+        "405B": 2 * (1024**4),  # 15T tokens
     },
     Version.V3: {
         "test": 15 * (1024**4),  # 15T tokens
         "1B": 15 * (1024**4),  # 15T tokens
         "3B": 15 * (1024**4),  # 15T tokens
+        "7B": 15 * (1024**4),  # 15T tokens
         "8B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
+        "405B": 15 * (1024**4),  # 15T tokens
     },
 }
 
@@ -193,6 +198,7 @@ def get_trainer_kwargs(
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
         )
+
     elif model_size == "7B":
         trainer_kwargs = dict(
             model_kwargs=dict(
@@ -286,6 +292,25 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+                # tpu-v6e.
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64, model=4)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=jax_remat_policies.nothing_saveable,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
                 ),
             ),
         )
@@ -411,6 +436,25 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
+                # tpu-v6e.
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=jax_remat_policies.nothing_saveable,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
                 # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
                 # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
                 (
@@ -419,6 +463,61 @@ def get_trainer_kwargs(
                 ),
             ),
         )
+    elif model_size == "405B":
+        remat_policy_405b = config_for_function(
+            jax_remat_policies.save_and_offload_only_these_names
+        ).set(
+            names_which_can_be_saved=[],
+            names_which_can_be_offloaded=[
+                # "FlashAttention.q_proj",
+                # "FlashAttention.k_proj",
+                # "FlashAttention.v_proj",
+                "TransformerLayer.input",
+            ],
+            offload_src="device",
+            offload_dst="pinned_host",
+        )
+        # print("printing for pylint ignore", remat_policy_405b)
+        trainer_kwargs = dict(
+            model_kwargs=dict(
+                num_layers=126,
+                hidden_dim=16384,
+                ffn_dim=53248,
+                num_heads=128,
+                # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
+                num_kv_heads=8,
+                rope_theta=rope_theta,
+                shared_lm_head=False,
+                flash_attention=flash_attention,
+            ),
+            learner_kwargs=dict(peak_lr=8e-5, weight_decay=0.1),
+            max_sequence_length=max_sequence_length,
+            train_batch_size=len(jax.devices()),
+            max_step=max_step,
+            mesh_shape=mesh_shape_from_axes(fsdp=-1),
+            mesh_rules=(
+                # tpu-v6e.
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=remat_policy_405b,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+        )
+
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
     model_kwargs = trainer_kwargs.pop("model_kwargs")

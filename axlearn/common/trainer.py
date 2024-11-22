@@ -312,6 +312,11 @@ class SpmdTrainer(Module):
             self._trainer_state_partition_specs = jax.tree.map(
                 lambda spec: spec.mesh_axes, self._trainer_state_specs
             )
+            self._trainer_state_partition_specs = self._trainer_state_partition_specs._replace(
+                learner=jax.tree_util.tree_map(
+                    lambda spec: spec.sharding, self._trainer_state_specs.learner
+                )
+            )
             # Create evalers, which depend on model_param_partition_specs.
             self._evalers = {}
             for evaler_name, evaler_cfg in cfg.evalers.items():
@@ -575,7 +580,7 @@ class SpmdTrainer(Module):
                     )
                     self.vlog(3, "Done step %s", self.step)
                     num_steps += 1
-                    if num_steps % 100 == 0:
+                    if num_steps % 1 == 0:
                         now = time.perf_counter()
                         average_step_time = (now - start_time) / num_steps
                         self._step_log("Average step time: %s seconds", average_step_time)
@@ -1020,12 +1025,11 @@ class SpmdTrainer(Module):
             # Run the compiled function.
             self._trainer_state, outputs = compiled_train_step_fn(self.trainer_state, input_batch)
 
-        if self.step % 100 == 0 or 0 <= self.step <= 5:
-            self._step_log(
-                "loss=%s aux=%s",
-                outputs["loss"],
-                jax.tree.map(lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]),
-            )
+        self._step_log(
+            "loss=%s aux=%s",
+            outputs["loss"],
+            jax.tree.map(lambda x: x.item() if x.ndim == 0 else f"T{x.shape}", outputs["aux"]),
+        )
 
         self.summary_writer(self.step, {"loss": outputs["loss"], **outputs["summaries"]})
         # Aggregate summaries across evalers.

@@ -385,21 +385,48 @@ def adamw_decoupled_learner_config(
         # Decay to this fraction of the peak_lr.
         alpha=alpha,
     )
-    optimizer_cfg = config_for_function(optimizers.chain).set(
-        args=[
-            config_for_function(optimizers.clip_by_global_norm).set(max_norm=1),
-            config_for_function(optimizers.adamw_decoupled_optimizer).set(
-                learning_rate=peak_lr,
-                b1=b1,
-                b2=b2,
-                eps=eps,
-                update_schedule=update_schedule,
-                weight_decay=weight_decay,
-                weight_decay_per_param_scale=None,
-                adam_update_transformation=adam_update_transformation,
-            ),
-        ]
-    )
+    use_adastar = False
+    use_skip = False
+    if use_adastar:
+        optimizer = config_for_function(optimizers.adastar_optimizer).set(
+            learning_rate=peak_lr,
+            # adafactor does not apply smoothing on gradients (but on raw updates).
+            gradient_ema_decay=None,
+            gradient_ema_debias=None,
+            gradient_square_ema_decay=b2,
+            gradient_square_ema_debias=True,
+            eps=0,
+            # adafactor eps is applied on the square.
+            eps_square=1e-30,
+            # Clipping is applied on raw updates by per-param norm (not global norm).
+            raw_update_clipping_threshold=1.0,
+            # Smoothing is applied on raw updates.
+            update_ema_decay=b1,
+            # ... but without debiasing (!).
+            update_ema_debias=False,
+            weight_decay=weight_decay,
+            update_schedule=update_schedule,
+            adam_update_transformation=adam_update_transformation,
+        )
+    else:
+        optimizer = config_for_function(optimizers.adamw_decoupled_optimizer).set(
+            learning_rate=peak_lr,
+            b1=b1,
+            b2=b2,
+            eps=eps,
+            update_schedule=update_schedule,
+            weight_decay=weight_decay,
+            weight_decay_per_param_scale=None,
+            adam_update_transformation=adam_update_transformation,
+        )
+    if use_skip:
+        optimizer_cfg = config_for_function(optimizers.skip_and_clip_by_global_norm).set(
+            inner=optimizer, drop_norm=100, max_norm=1
+        )
+    else:
+        optimizer_cfg = config_for_function(optimizers.chain).set(
+            args=[config_for_function(optimizers.clip_by_global_norm).set(max_norm=1), optimizer]
+        )
     return learner.Learner.default_config().set(optimizer=optimizer_cfg)
 
 
@@ -681,6 +708,10 @@ def get_trainer_config_fn(
         cfg.train_dtype = STEP_DTYPE
         cfg.input = input_tf_data.Input.default_config().set(
             is_training=True,
+            # input_dispatcher=input_dispatch.InputDispatcher.default_config().set(
+            #     global_logical_batch_size=train_batch_size,
+            #     logical_feed_indices=list(range(0, 64, 4)),
+            # ),
             source=train_input_source,
             processor=config_for_function(input_tf_data.identity),
             batcher=config_for_function(input_tf_data.batch).set(

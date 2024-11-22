@@ -45,6 +45,8 @@ def setup(
     jax.config.update("jax_default_prng_impl", "rbg")
     # This allows replicated jax.Arrays to be used for computation on the host.
     jax.config.update("jax_spmd_mode", "allow_all")
+    # Helps with debugging initialization isues.
+    jax.config.update("jax_debug_log_modules", "jax")
 
     global _jax_distributed_initialized  # pylint: disable=global-statement
     if not _jax_distributed_initialized:

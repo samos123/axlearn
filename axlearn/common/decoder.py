@@ -744,7 +744,7 @@ class LmHead(BaseLayer):
     @classmethod
     def default_config(cls):
         cfg = super().default_config()
-        cfg.param_partition_spec = (None, "model")
+        cfg.param_partition_spec = ("fsdp", "model")
         return cfg
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:

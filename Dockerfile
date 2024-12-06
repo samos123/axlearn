@@ -95,10 +95,11 @@ ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.h
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN pip install .[core,tpu]
-# Install Nightly and use a stamp to trigger a rebuild of cached layer
-# ENV STAMPY_STAMP=nov-19
 RUN if [ -n "$EXTRAS" ]; then pip install .[$EXTRAS]; fi
-RUN pip install -U --pre jax==0.4.36.dev20241117 jaxlib==0.4.36.dev20241117 libtpu-nightly==0.1.dev20241117+nightly requests -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+RUN export DATE=20241205 && \
+    pip install -U --pre jax==0.4.36.dev$DATE jaxlib==0.4.36.dev$DATE libtpu-nightly==0.1.dev$DATE+nightly requests \
+    -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html \
+    -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 COPY . .
 
 ################################################################################

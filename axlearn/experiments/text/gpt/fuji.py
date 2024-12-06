@@ -15,10 +15,11 @@ import functools
 import itertools
 from typing import Any, Optional, Union
 
+import jax
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
-from axlearn.common.attention import (
+from axlearn.common.attention import (  # StackedTransformerLayer,
     BaseStackedTransformerLayer,
     FusedGroupedQKVLinear,
     FusedQKVLinear,
@@ -54,7 +55,7 @@ from axlearn.experiments.text.gpt.common import model_config as common_model_con
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
+MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B", "405B")
 
 
 class Version(enum.Enum):
@@ -92,18 +93,22 @@ TOTAL_TOKENS = {
         "test": 1 * (1024**4),  # 1T tokens
         "7B": 1 * (1024**4),  # 1T tokens
         "70B": int(1.4 * (1024**4)),  # 1.4T tokens
+        "405B": int(1.4 * (1024**4)),  # 1.4T tokens
     },
     Version.V2: {
         "test": 2 * (1024**4),  # 2T tokens
         "7B": 2 * (1024**4),  # 2T tokens
         "70B": 2 * (1024**4),  # 2T tokens
+        "405B": 2 * (1024**4),  # 15T tokens
     },
     Version.V3: {
         "test": 15 * (1024**4),  # 15T tokens
         "1B": 15 * (1024**4),  # 15T tokens
         "3B": 15 * (1024**4),  # 15T tokens
+        "7B": 15 * (1024**4),  # 15T tokens
         "8B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
+        "405B": 15 * (1024**4),  # 15T tokens
     },
 }
 
@@ -193,6 +198,7 @@ def get_trainer_kwargs(
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
         )
+
     elif model_size == "7B":
         trainer_kwargs = dict(
             model_kwargs=dict(
@@ -286,6 +292,25 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+                # tpu-v6e.
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64, model=4)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=jax_remat_policies.nothing_saveable,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
                 ),
             ),
         )
@@ -405,6 +430,25 @@ def get_trainer_kwargs(
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
                                         policy=offload_dots_saveable_policy,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+                # tpu-v6e.
+                (
+                    "tpu-v6e-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=jax_remat_policies.nothing_saveable,
                                     ),
                                 }
                             ),

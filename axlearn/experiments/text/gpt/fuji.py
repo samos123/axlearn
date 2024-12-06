@@ -487,7 +487,7 @@ def get_trainer_kwargs(
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
                 num_kv_heads=8,
                 rope_theta=rope_theta,
-                shared_lm_head=False,
+                shared_lm_head=True,
                 flash_attention=flash_attention,
             ),
             learner_kwargs=dict(peak_lr=8e-5, weight_decay=0.1),

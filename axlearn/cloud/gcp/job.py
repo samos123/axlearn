@@ -722,6 +722,19 @@ class TPUGKEJob(GKEJob):
                 "tpu-provisioner.cloud.google.com/disable-autoprovisioning": (
                     "true" if cfg.enable_pre_provisioner else "false"
                 ),
+                # Needed for using multi-nic with hostNetwork false
+                "networking.gke.io/default-interface": "eth0",
+                # bodaberg-v6e-256 cluster
+                "networking.gke.io/interfaces": '[\
+                   {"interfaceName":"eth0","network":"default"},\
+                   {"interfaceName":"eth1","network":"tpu-secondary"}\
+                ]',
+                # stoelinga cluster
+                # "networking.gke.io/interfaces": '[\
+                #     {"interfaceName":"eth0","network":"default"},\
+                #     {"interfaceName":"eth1","network":"tpu-secondary"},\
+                #     {"interfaceName":"eth2","network":"tpu-tertiary"}\
+                # ]',
             }
         )
 
@@ -759,8 +772,9 @@ class TPUGKEJob(GKEJob):
             initContainers=[self._build_uploader_container()],
             serviceAccountName=cfg.service_account,
             volumes=volumes,
-            hostNetwork=True,
-            dnsPolicy="ClusterFirstWithHostNet",
+            hostNetwork=False,
+            # Only needed with hostNetwork true
+            # dnsPolicy="ClusterFirstWithHostNet",
             # In case you see preemptions from other xpk jobs.
             priorityClassName="very-high",
         )

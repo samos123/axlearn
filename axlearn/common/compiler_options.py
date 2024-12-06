@@ -98,6 +98,8 @@ def default_xla_options(
             xla_sc_enable_instruction_fusion="false",
             xla_sc_disjoint_spmem="false",
             xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            # 16GB, see https://b.corp.google.com/issues/380324740#comment28
+            megascale_grpc_premap_memory_bytes=17179869184,
         )
         options["2a886c8_chip_config_name"] = "megachip_tccontrol"
 

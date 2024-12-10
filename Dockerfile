@@ -100,6 +100,8 @@ RUN if [ -n "$EXTRAS" ]; then pip install .[$EXTRAS]; fi
 #     pip install -U --pre jax==0.4.36.dev$DATE jaxlib==0.4.36.dev$DATE libtpu-nightly==0.1.dev$DATE+nightly requests \
 #     -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html \
 #     -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+RUN pip install -U "jax[tpu]==0.4.37" "jax==0.4.37" "jaxlib==0.4.36" \
+    -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 COPY . .
 
 ################################################################################

@@ -96,10 +96,10 @@ ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.h
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN pip install .[core,tpu]
 RUN if [ -n "$EXTRAS" ]; then pip install .[$EXTRAS]; fi
-RUN export DATE=20241205 && \
-    pip install -U --pre jax==0.4.36.dev$DATE jaxlib==0.4.36.dev$DATE libtpu-nightly==0.1.dev$DATE+nightly requests \
-    -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html \
-    -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+# RUN export DATE=20241205 && \
+#     pip install -U --pre jax==0.4.36.dev$DATE jaxlib==0.4.36.dev$DATE libtpu-nightly==0.1.dev$DATE+nightly requests \
+#     -f https://storage.googleapis.com/jax-releases/jax_nightly_releases.html \
+#     -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 COPY . .
 
 ################################################################################

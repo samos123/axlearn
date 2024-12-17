@@ -48,6 +48,8 @@ def default_xla_options(
         options.update(
             # improved performance for v6e
             xla_tpu_scoped_vmem_limit_kib="98304",
+            # Needed for debugging crash
+            xla_tpu_enable_sdc_checker="true",
             # maxtext xla flags
             xla_tpu_enable_async_collective_fusion="true",
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",

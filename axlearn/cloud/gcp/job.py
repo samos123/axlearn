@@ -523,6 +523,7 @@ class TPUGKEJob(GKEJob):
         env_vars["TF_CPP_MIN_LOG_LEVEL"] = "0"
         env_vars["TPU_STDERR_LOG_LEVEL"] = "0"
         env_vars["TPU_MIN_LOG_LEVEL"] = "0"
+        env_vars["GRPC_TRACE"] = "client_channel"
 
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()

@@ -519,6 +519,11 @@ class TPUGKEJob(GKEJob):
                 self._maybe_add_volume_mount(volume_mounts, spec=mount)
 
         env_vars = {**cfg.env_vars}
+        # Helps with debugging TPU related issues
+        env_vars["TF_CPP_MIN_LOG_LEVEL"] = "0"
+        env_vars["TPU_STDERR_LOG_LEVEL"] = "0"
+        env_vars["TPU_MIN_LOG_LEVEL"] = "0"
+
         if cfg.enable_tpu_ici_resiliency is not None:
             env_vars["ENABLE_ICI_RESILIENCY"] = str(cfg.enable_tpu_ici_resiliency).lower()
 

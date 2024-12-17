@@ -55,7 +55,7 @@ from axlearn.experiments.text.gpt.common import model_config as common_model_con
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import TrainerConfigFn
 
-MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B", "405B")
+MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
 
 
 class Version(enum.Enum):
@@ -93,13 +93,11 @@ TOTAL_TOKENS = {
         "test": 1 * (1024**4),  # 1T tokens
         "7B": 1 * (1024**4),  # 1T tokens
         "70B": int(1.4 * (1024**4)),  # 1.4T tokens
-        "405B": int(1.4 * (1024**4)),  # 1.4T tokens
     },
     Version.V2: {
         "test": 2 * (1024**4),  # 2T tokens
         "7B": 2 * (1024**4),  # 2T tokens
         "70B": 2 * (1024**4),  # 2T tokens
-        "405B": 2 * (1024**4),  # 15T tokens
     },
     Version.V3: {
         "test": 15 * (1024**4),  # 15T tokens
@@ -108,7 +106,6 @@ TOTAL_TOKENS = {
         "7B": 15 * (1024**4),  # 15T tokens
         "8B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
-        "405B": 15 * (1024**4),  # 15T tokens
     },
 }
 

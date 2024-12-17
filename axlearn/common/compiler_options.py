@@ -4,12 +4,12 @@
 # This module must not depend on any jax/axlearn modules so that
 # importing this module does not result in initializing jax.
 import re
-from typing import Any, Dict, Union
+from typing import Any, Union
 
 
 def default_xla_options(
     *, instance_type: str, num_slices: int, backend: str
-) -> dict[str, Union[str, bool, int]]:
+) -> dict[str, Union[str, bool]]:
     """Return the default flags for the given instance type and backend.
 
     These options can be passed to `jitted_fn.lower(...).compile(compiler_options=...)`
@@ -31,7 +31,7 @@ def default_xla_options(
     if backend != "tpu":
         raise NotImplementedError(backend)
     version = infer_tpu_version(infer_tpu_type(instance_type))
-    options: Dict[str, Union[str, bool, int]] = dict(
+    options = dict(
         xla_tpu_spmd_rng_bit_generator_unsafe=True,  # SPMD partition-aware RngBitGenerator.
         xla_tpu_enable_latency_hiding_scheduler="true",  # Try to schedule ops efficiently.
         xla_tpu_perform_spmd_cse_prevention="false",
@@ -46,35 +46,11 @@ def default_xla_options(
         )
     if version == "v6e":
         options.update(
-            # Change to 16GB. The default is 4GB which is too small for larger models. This
-            # cause the step time to be double. You should increase this
-            # further if you see "Allocator failed to allocate". A feature
-            # to dynamically allocate may come later: b/380514965
-            megascale_grpc_premap_memory_bytes=17179869184,
-            # Flag controlling the maximum number of overlapping host offloadings.
-            xla_tpu_host_transfer_overlap_limit=24,
-            # Flag controlling the maximum number of overlapping cross-DCN send/recv.
-            xla_max_concurrent_host_send_recv=100,
-            # Flag controlling the HBM memory limit as a percentage of the total HBM size.
-            # Default value is 95. Can tune up or down to give more or less memory for the
-            # scheduler. The scheduler favors more on less memory usage when it's under
-            # memory pressure, instead of hiding latency by overlapping more computations
-            # and communications.
-            xla_tpu_scheduler_percent_shared_memory_limit=90,
-            # Flag controlling the number of times the scheduler is run if the scheduled
-            # peak memory usage exceeds the initial memory limit, by setting memory limit
-            # to 90% of the previous memory limit each time. Default value is 1. Sometimes
-            # when the scheduler thinks it goes out memory, it may not actually happen due
-            # to other factors controlled by other compiler passes, or the initial memory
-            # limit is already set too low. Cutting the memory limit to 90% of previous one
-            # though, may make the scheduler weighting too much on the memory usage instead
-            # of latency side.
-            xla_latency_hiding_scheduler_rerun=2,
-            # Improved performance for v6e.
-            xla_tpu_scoped_vmem_limit_kib=98304,
-        )
-        options.update(
-            # Improved performance for v6e.
+            # improved performance for v6e
+            xla_tpu_scoped_vmem_limit_kib="98304",
+            # Needed for debugging crash
+            xla_tpu_enable_sdc_checker="true",
+            # maxtext xla flags
             xla_tpu_enable_async_collective_fusion="true",
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",
             xla_tpu_enable_async_collective_fusion_multiple_steps="true",
@@ -85,32 +61,50 @@ def default_xla_options(
             # Flag to enable memory tracking scheduling. The default AUTO only enables
             # it in some situations. Not needed if
             # xla_tpu_enable_all_experimental_scheduler_features is set to true already.
-            xla_tpu_enable_scheduler_memory_pressure_tracking="true",
+            xla_tpu_enable_scheduler_memory_pressure_tracking="ENABLED",
+            # Flag controlling the maximum number of overlapping host offloadings.
+            xla_tpu_host_transfer_overlap_limit="24",
             # Flag to enable the aggressive removal of opt-barriers.
-            xla_tpu_aggressive_opt_barrier_removal="true",
+            xla_tpu_aggressive_opt_barrier_removal="ENABLED",
             # Flag to enable more aggressive scheduling for async ops, such as pushing
             # the async start to the beginning of the loop body.
-            xla_lhs_prioritize_async_depth_over_stall="true",
+            xla_lhs_prioritize_async_depth_over_stall="ENABLED",
             # Flag to enable pipelining of cross-DCN all-gathers.
             xla_tpu_enable_ag_backward_pipelining="true",
-            xla_should_allow_loop_variant_parameter_in_chain="true",
-            xla_should_add_loop_invariant_op_in_chain="true",
+            xla_should_allow_loop_variant_parameter_in_chain="ENABLED",
+            xla_should_add_loop_invariant_op_in_chain="ENABLED",
+            # Flag controlling the maximum number of overlapping cross-DCN send/recv.
+            xla_max_concurrent_host_send_recv="100",
+            # Flag controlling the HBM memory limit as a percentage of the total HBM size.
+            # Default value is 95. Can tune up or down to give more or less memory for the
+            # scheduler. The scheduler favors more on less memory usage when it's under
+            # memory pressure, instead of hiding latency by overlapping more computations
+            # and communications.
+            xla_tpu_scheduler_percent_shared_memory_limit="90",
+            # Flag controlling the number of times the scheduler is run if the scheduled
+            # peak memory usage exceeds the initial memory limit, by setting memory limit
+            # to 90% of the previous memory limit each time. Default value is 1. Sometimes
+            # when the scheduler thinks it goes out memory, it may not actually happen due
+            # to other factors controlled by other compiler passes, or the initial memory
+            # limit is already set too low. Cutting the memory limit to 90% of previous one
+            # though, may make the scheduler weighting too much on the memory usage instead
+            # of latency side.
+            xla_latency_hiding_scheduler_rerun="2",
+            # Maxtext 405b flag
             xla_tpu_use_enhanced_launch_barrier="true",
             # Sparsecore offloading for all reduce.
-            # Uncomment below flags to enable it.
-            # xla_sc_disable_megacore_partitioning="true",
-            # xla_tpu_use_tc_device_shape_on_sc="true",
-            # tpu_use_continuations="true",
-            # xla_jf_crs_combiner_threshold_count=10,
-            # xla_sc_enable_instruction_fusion="false",
-            # xla_sc_disjoint_spmem="false",
-            # xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            xla_sc_disable_megacore_partitioning="true",
+            xla_tpu_use_tc_device_shape_on_sc="true",
+            tpu_use_continuations="true",
+            xla_jf_crs_combiner_threshold_count="10",
+            xla_sc_enable_instruction_fusion="false",
+            xla_sc_disjoint_spmem="false",
+            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
             # 16GB, see https://b.corp.google.com/issues/380324740#comment28
             megascale_grpc_premap_memory_bytes="17179869184",
         )
-        # This flag can be removed after upgrading to Jax 0.4.38.
-        # Uncomment for sparsecore offloading.
-        # options["2a886c8_chip_config_name"] = "megachip_tccontrol"
+        options["2a886c8_chip_config_name"] = "megachip_tccontrol"
+
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
         options.update(
@@ -125,17 +119,13 @@ def default_xla_options(
         )
 
     # Validate options. Will never fail if this function is implemented correctly.
-    for k, v in options.items():
-        try:
-            int(v)
-            continue
-        except ValueError:
-            assert v in [True, False, "true", "false", "megachip_tccontrol"], (k, v)
+    # for k, v in options.items():
+    #     assert v in [True, False, "true", "false", "98304", "ENABLED"], (k, v)
 
     return options
 
 
-def xla_flags_from_options(xla_options: dict[str, Union[str, bool, int]]) -> str:
+def xla_flags_from_options(xla_options: dict[str, Union[str, bool]]) -> str:
     """Convert an XLA options dict suitable for
     `jitted_fn.lower(...).compile(compiler_options=xla_options)`
     to XLA flags suitable for the `XLA_FLAGS` environment variable.

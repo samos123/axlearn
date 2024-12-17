@@ -410,7 +410,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=len(jax.devices()) * 3,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -436,7 +436,6 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
-                # tpu-v6e.
                 (
                     "tpu-v6e-.*",
                     ChainConfigModifier.default_config().set(
@@ -448,7 +447,18 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
-                                        policy=jax_remat_policies.nothing_saveable,
+                                        policy=config_for_function(
+                                            jax_remat_policies.save_and_offload_only_these_names
+                                        ).set(
+                                            names_which_can_be_saved=[],
+                                            names_which_can_be_offloaded=[
+                                                "FlashAttention.q_proj",
+                                                "FlashAttention.k_proj",
+                                                "FlashAttention.v_proj",
+                                            ],
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
                                     ),
                                 }
                             ),

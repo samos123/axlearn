@@ -444,20 +444,27 @@ def get_trainer_kwargs(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=True,
-                                        policy=config_for_function(
-                                            jax_remat_policies.save_and_offload_only_these_names
-                                        ).set(
-                                            names_which_can_be_saved=[],
-                                            names_which_can_be_offloaded=[
-                                                "FlashAttention.q_proj",
-                                                "FlashAttention.k_proj",
-                                                "FlashAttention.v_proj",
-                                            ],
-                                            offload_src="device",
-                                            offload_dst="pinned_host",
-                                        ),
+                                        policy=jax_remat_policies.nothing_saveable,
                                     ),
                                 }
+                                # Causes convergence issues where loss goes down and up.
+                                # remat_policies={
+                                #     "model.decoder.transformer.layer": RematSpec(
+                                #         prevent_cse=True,
+                                #         policy=config_for_function(
+                                #             jax_remat_policies.save_and_offload_only_these_names
+                                #         ).set(
+                                #             names_which_can_be_saved=[],
+                                #             names_which_can_be_offloaded=[
+                                #                 "FlashAttention.q_proj",
+                                #                 "FlashAttention.k_proj",
+                                #                 "FlashAttention.v_proj",
+                                #             ],
+                                #             offload_src="device",
+                                #             offload_dst="pinned_host",
+                                #         ),
+                                #     ),
+                                # }
                             ),
                         ],
                     ),

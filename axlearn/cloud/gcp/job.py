@@ -671,7 +671,6 @@ class TPUGKEJob(GKEJob):
             labels.update({"bastion-tier": "reserved"})
         else:
             logging.info("Found tier=%s in env. Using spot quota", tier)
-            selector.update({"cloud.google.com/gke-spot": "true"})
             tolerations.append(
                 {
                     "key": "cloud.google.com/gke-spot",

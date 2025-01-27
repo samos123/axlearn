@@ -495,7 +495,14 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
-                            GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
+                            # Causes following error:
+                            # args[0] of shape bfloat16[64,4096,64,128], where args[0] is bound
+                            # to jit_attn's parameter 'query', corresponds to in_specs[0] of
+                            # value PartitionSpec(('data', 'expert', 'fsdp'), None,
+                            # ('seq', 'model'), None), which maps array axis 0 (of size 64)
+                            # to mesh axes ('data', 'expert', 'fsdp')
+                            # (of total size 256), but 256 does not evenly divide 64
+                            # GradientAccumulationModifier.default_config().set(grad_acc_steps=4)
                         ],
                     ),
                 ),

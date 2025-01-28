@@ -14,6 +14,7 @@ import math
 from collections.abc import Sequence
 from typing import Optional, Protocol, Union
 
+import jax
 import jax.numpy as jnp
 import tensorflow as tf
 from jax.sharding import PartitionSpec
@@ -54,6 +55,7 @@ from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.evaler import BaseMetricCalculator, ModelSummaryAccumulator, SpmdEvaler
 from axlearn.common.evaler import every_n_steps_policy as eval_every_n_steps_policy
 from axlearn.common.flash_attention.layer import FlashAttention
+from axlearn.common.input_dispatch import InputDispatcher
 from axlearn.common.layers import BaseNormalizationLayer, set_bias_recursively, set_norm_recursively
 from axlearn.common.optimizer_base import PartitionedGradientTransformation
 from axlearn.common.param_init import PARAM_REGEXP_WEIGHT, DefaultInitializer, WeightInitializer
@@ -670,13 +672,23 @@ def get_trainer_config_fn(
         cfg.learner = learner_cfg
         cfg.max_step = max_step
         cfg.train_dtype = STEP_DTYPE
+        num_devices = len(jax.devices())
+        global_logical_batch = num_devices // 4
+        logical_feed_indices = list(range(num_devices // 4))
         cfg.input = input_tf_data.Input.default_config().set(
             is_training=True,
             source=train_input_source,
             processor=config_for_function(input_tf_data.identity),
-            batcher=config_for_function(input_tf_data.batch).set(
-                global_batch_size=train_batch_size,
-                prefetch_buffer_size=tf.data.AUTOTUNE,
+            input_dispatcher=InputDispatcher.default_config().set(
+                global_logical_batch_size=global_logical_batch,
+                logical_feed_indices=logical_feed_indices,
+            ),
+            batcher=config_for_function(input_tf_data.per_feed_batch).set(
+                feed_batch_size=1,
+                # global_batch_size=train_batch_size,
+                # global_logical_batch_size=global_logical_batch,
+                # logical_feed_indices=logical_feed_indices,
+                # prefetch_buffer_size=tf.data.AUTOTUNE,
                 pad_example_fn=input_tf_data.default_pad_example_fn,
             ),
             input_partitioner=config_for_function(input_base.partition_by_path_rank).set(

@@ -78,11 +78,8 @@ def default_xla_options(
         options.update(
             # Improved performance for v6e.
             xla_tpu_enable_async_collective_fusion="true",
+            xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",
             xla_tpu_enable_async_collective_fusion_multiple_steps="true",
-            # Set to collective_fusion to false when you want to offload ag to sparsecore
-            xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
-            xla_tpu_enable_async_collective_fusion_fuse_all_reduce="false",
-            xla_tpu_enable_async_collective_fusion_fuse_reduce_scatter="false",
             xla_tpu_overlap_compute_collective_tc="true",
             xla_enable_async_all_gather="true",
             # Host offloading flags
@@ -101,19 +98,14 @@ def default_xla_options(
             xla_should_allow_loop_variant_parameter_in_chain="true",
             xla_should_add_loop_invariant_op_in_chain="true",
             xla_tpu_use_enhanced_launch_barrier="true",
-            # Sparsecore offloading base flags
+            # Sparsecore offloading for all reduce.
+            # Uncomment below flags to enable it.
             xla_sc_disable_megacore_partitioning="true",
             xla_tpu_use_tc_device_shape_on_sc="true",
             tpu_use_continuations="true",
             xla_sc_enable_instruction_fusion="false",
             xla_sc_disjoint_spmem="false",
-            # Enable SparseCore for all gather, reduce scatter and all reduce
-            xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
-            xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
             xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
-            xla_tpu_enable_all_gather_offload_tracing="true",
-            xla_tpu_enable_reduce_scatter_offload_tracing="true",
-            xla_tpu_enable_all_reduce_offload_tracing="true",
             # TODO(kelvinzou): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
         )

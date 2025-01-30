@@ -117,7 +117,7 @@ def default_xla_options(
             # TODO(kelvinzou): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
             # improve 70b all-gather perf
-            xla_tpu_sparse_core_all_gather_latency_multiplier="1.5",
+            xla_tpu_sparse_core_all_gather_latency_multiplier="2",
         )
         # This flag can be removed after upgrading to Jax 0.4.38.
         # Uncomment for sparsecore offloading.
@@ -141,7 +141,7 @@ def default_xla_options(
             int(v)
             continue
         except ValueError:
-            assert v in [True, False, "true", "false", "megachip_tccontrol", "1.5"], (k, v)
+            assert v in [True, False, "true", "false", "megachip_tccontrol", "2"], (k, v)
 
     return options
 

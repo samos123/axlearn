@@ -3,9 +3,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  Explore-GitHub-Actions:
+  axlearn-flash-attention-h100:
     # You need to use the INSTALLATION_NAME from the previous step
     runs-on: arc-runner-h100
+    env:
+      PIP_FIND_LINKS: https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -14,6 +16,7 @@ jobs:
           cache: 'pip'
       - run: pip install --upgrade pip
       - run: pip install '.[core,gcp,gpu]'
-      - run: pip install --upgrade --force-reinstall 'jax[cuda12]==0.5.3'
+      # Pin specific Jax version
+      # - run: pip install --upgrade --force-reinstall 'jax[cuda12]==0.5.3'
       - run: pip install 'pytest'
       - run: pytest axlearn/common/flash_attention/gpu_attention_test.py

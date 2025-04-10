@@ -13,6 +13,9 @@ jobs:
       LD_LIBRARY_PATH: "/usr/local/nvidia/lib64"
     steps:
       - run: ls /usr/local/nvidia/lib64
+      - run: ls /usr/local/nvidia/bin
+      - run: echo "/usr/local/nvidia/bin" >> "$GITHUB_PATH"
+      - run: nvidia-smi
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:

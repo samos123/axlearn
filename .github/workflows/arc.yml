@@ -13,7 +13,5 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
       - run: pip install --upgrade pip
-      # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
-      - run: pip install '.[core,dev,grain,gcp,gpu]'
-      # pylint uses approx 12GB of memory during this run, look into split to decrease?
+      - run: pip install '.[core,gcp,gpu]'
       - run: pytest axlearn/common/flash_attention/gpu_attention_test.py

@@ -7,8 +7,10 @@ jobs:
     # You need to use the INSTALLATION_NAME from the previous step
     runs-on: arc-runner-h100
     env:
-      PIP_FIND_LINKS: https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+      PIP_FIND_LINKS: "https://storage.googleapis.com/jax-releases/jax_cuda_releases.html"
+      LD_LIBRARY_PATH: "/usr/local/nvidia/lib64"
     steps:
+      - run: ls /usr/local/nvidia/lib64
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -19,7 +21,5 @@ jobs:
       # Pin specific Jax version
       # - run: pip install --upgrade --force-reinstall 'jax[cuda12]==0.5.3'
       - run: python -c "import jax; print(jax.local_devices())"
-      - run: ls /usr/local/nvidia/lib64
-      - run: LD_LIBRARY_PATH=/usr/local/nvidia/lib64 python -c "import jax; print(jax.local_devices())"
       - run: pip install 'pytest'
       - run: pytest axlearn/common/flash_attention/gpu_attention_test.py

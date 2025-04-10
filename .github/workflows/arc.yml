@@ -3,7 +3,11 @@ on:
   schedule:
   - cron: 17 0 * * *
   workflow_dispatch:
-
+    inputs:
+      jax_version:
+        required: true
+        default: '0.5.1'
+        type: string
 jobs:
   axlearn-flash-attention-h100:
     # You need to use the INSTALLATION_NAME from the previous step
@@ -11,6 +15,7 @@ jobs:
     env:
       PIP_FIND_LINKS: "https://storage.googleapis.com/jax-releases/jax_cuda_releases.html"
       LD_LIBRARY_PATH: "/usr/local/nvidia/lib64"
+      JAX_VERSION: ${{ inputs.jax_version }}
     steps:
       - run: ls /usr/local/nvidia/lib64
       - run: ls /usr/local/nvidia/bin
@@ -24,6 +29,6 @@ jobs:
       - run: pip install --upgrade pip
       - run: pip install '.[core,gcp,gpu]'
       # Pin specific Jax version
-      - run: pip install --upgrade --force-reinstall 'jax[cuda12]==0.5.1'
+      - run: pip install --upgrade --force-reinstall "jax[cuda12]==${JAX_VERSION}"
       - run: pip install 'pytest'
       - run: pytest axlearn/common/flash_attention/gpu_attention_test.py

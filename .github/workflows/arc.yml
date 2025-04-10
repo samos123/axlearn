@@ -1,4 +1,4 @@
-name: Actions Runner Controller Demo
+name: AXLearn GKE H100 flash attention test
 on:
   workflow_dispatch:
 
@@ -7,5 +7,13 @@ jobs:
     # You need to use the INSTALLATION_NAME from the previous step
     runs-on: arc-runner-h100
     steps:
-    - run: echo "🎉 This job uses runner scale set runners!"
-    - run: nvidia-smi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      - run: pip install --upgrade pip
+      # TODO(markblee): Remove gcp,vertexai_tensorboard from CI. (needed by pytype)
+      - run: pip install '.[core,dev,grain,gcp,gpu]'
+      # pylint uses approx 12GB of memory during this run, look into split to decrease?
+      - run: pytest axlearn/common/flash_attention/gpu_attention_test.py

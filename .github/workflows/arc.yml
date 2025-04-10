@@ -14,5 +14,6 @@ jobs:
           cache: 'pip'
       - run: pip install --upgrade pip
       - run: pip install '.[core,gcp,gpu]'
+      - run: pip install --upgrade --force-reinstall 'jax[cuda12]==0.5.3'
       - run: pip install 'pytest'
       - run: pytest axlearn/common/flash_attention/gpu_attention_test.py

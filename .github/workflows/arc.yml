@@ -18,5 +18,8 @@ jobs:
       - run: pip install '.[core,gcp,gpu]'
       # Pin specific Jax version
       # - run: pip install --upgrade --force-reinstall 'jax[cuda12]==0.5.3'
+      - run: python -c "import jax; print(jax.local_devices())"
+      - run: ls /usr/local/nvidia/lib64
+      - run: LD_LIBRARY_PATH=/usr/local/nvidia/lib64 python -c "import jax; print(jax.local_devices())"
       - run: pip install 'pytest'
       - run: pytest axlearn/common/flash_attention/gpu_attention_test.py

@@ -41,15 +41,25 @@ _PATHWAYS_WORKER_PORT = 29001
 # Pin to specific pathways image version for stable release.
 # Oldest available is jax-0.5.1, although axlearn is using jax-0.4.38.
 # Verified the backwards compatibility works.
-_PATHWAYS_IMAGE_TAG = "jax-0.5.1"
+# _PATHWAYS_IMAGE_TAG = "jax-0.5.1"
+_PATHWAYS_IMAGE_TAG = "insecure"
 # The docker image used by pathways proxy container.
+# _PATHWAYS_PROXY_IMAGE = (
+#     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
+# )
 _PATHWAYS_PROXY_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/"
+    f"pathways/gke/shauryag/unsanitized_proxy_server:{_PATHWAYS_IMAGE_TAG}"
 )
 # The docker image used by pathways resource manager container and worker container.
+# _PATHWAYS_SERVER_IMAGE = (
+#     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
+# )
 _PATHWAYS_SERVER_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/"
+    f"pathways/gke/shauryag/unsanitized_server:{_PATHWAYS_IMAGE_TAG}"
 )
+
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
 # The container name of pathways proxy.
@@ -246,6 +256,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         self._update_env_list(env_list, "JAX_PLATFORMS", "proxy")
         self._update_env_list(env_list, "ENABLE_PATHWAYS_PERSISTENCE", "1")
         self._update_env_list(env_list, "TPU_SKIP_MDS_QUERY", "true")
+        self._update_env_list(env_list, "TEST_UNDECLARED_OUTPUTS_DIR", "true")
 
         env_list.append(
             {
@@ -283,6 +294,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         staging_location = f"{cfg.output_dir}/pathways-staging"
         pathways_tpu_version = get_pathways_tpu_version(system.gce_machine_type)
 
+        proxy_env = {
+            "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS": "yes",
+            "TEST_UNDECLARED_OUTPUTS_DIR": "true",
+        }
+        proxy_env_list = [{"name": k, "value": v} for k, v in proxy_env.items()]
+
         # If multi-head, every pathways-head will only
         # be connected to one pathways instance (a pathways-worker replicated job).
         pathways_instance_count = cfg.accelerator.num_replicas if self._is_single_head else 1
@@ -302,6 +319,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 # SideCar container is an init container with restartPolicy as "Always".
                 restartPolicy="Always",
                 args=cmd_args,
+                env=proxy_env_list,
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
             ),
             dict(

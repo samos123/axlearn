@@ -40,7 +40,6 @@ if [[ "$CONFIG" == *"orbaxem"* ]]; then
   axlearn gcp launch run --cluster=$GKE_CLUSTER \
         --runner_name gke_tpu_single \
         --queue=multislice-queue \
-        --priority_class=very-high \
         --name=$JOBSET_NAME \
         --instance_type=${INSTANCE_TYPE} \
         --host_mount_spec=name=tmp,host_path=/tmp,mount_path=/host-tmp \

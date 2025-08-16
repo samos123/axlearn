@@ -20,6 +20,24 @@ The main API is the `setup` function, which is commonly enabled via context mana
 with setup(spec):
     # Initialize jax distributed.
 ```
+
+Example launch command to run jax_live_devices only:
+```
+axlearn gcp launch run --cluster=$CLUSTER \
+        --runner_name gke_tpu_single \
+        --name=$USER \
+        --instance_type=tpu-v6e-16 \
+        --num_replicas=1 \
+        --bundler_spec=allow_dirty=True \
+        --bundler_type=artifactregistry --bundler_spec=image=tpu \
+        --bundler_spec=dockerfile=Dockerfile --bundler_spec=target=tpu \
+        -- python3 -m axlearn.common.launch_trainer_main \
+        --module=text.gpt.c4_trainer --config=fuji-7B-v2-flash \
+        --init_module=axlearn.cloud.gcp.tpu_health_check:jax_live_devices=180 \
+          --trainer_dir=gs://$PROJECT_ID-axlearn/$USER-v6e-7b-1/ \
+          --data_dir=gs://axlearn-public/tensorflow_datasets  \
+          --jax_backend=tpu \
+          --mesh_selector=tpu-v6e-16
 """
 
 import os
@@ -32,12 +50,14 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Literal, Optional, Union
 
+import jax
 from absl import flags, logging
+from jax.experimental import multihost_utils
 
 from axlearn.cloud.gcp import tpu_health_check_main
 from axlearn.common.file_system import open as fs_open
 
-CheckType = Literal["single", "pairwise", "global"]
+CheckType = Literal["single", "pairwise", "global", "jax_live_devices"]
 
 
 def _parse_spec_and_check_if_should_skip(
@@ -67,19 +87,22 @@ def _parse_spec_and_check_if_should_skip(
         return None
 
     # These environment variables are set by GKE.
-    if "MEGASCALE_NUM_SLICES" not in os.environ or "NODE_NAME" not in os.environ:
-        raise RuntimeError(
-            "TPU health check is enabled but MEGASCALE_NUM_SLICES and NODE_NAME are absent in env."
-        )
+    if check_type != "jax_live_devices":
+        if "MEGASCALE_NUM_SLICES" not in os.environ or "NODE_NAME" not in os.environ:
+            raise RuntimeError(
+                "TPU health check is enabled but MEGASCALE_NUM_SLICES and NODE_NAME are absent in env."
+            )
 
-    total_slices = int(os.environ["MEGASCALE_NUM_SLICES"])
-    if total_slices < num_slices_lower_bound:
-        logging.info(
-            "Skipping %s slice health check since num_slices < %d.",
-            check_type,
-            num_slices_lower_bound,
-        )
-        return None
+        total_slices = int(os.environ["MEGASCALE_NUM_SLICES"])
+        if total_slices < num_slices_lower_bound:
+            logging.info(
+                "Skipping %s slice health check since num_slices < %d.",
+                check_type,
+                num_slices_lower_bound,
+            )
+            return None
+    elif "NODE_NAME" not in os.environ:
+        raise RuntimeError("TPU health check is enabled but NODE_NAME is absent in env.")
     return timeout
 
 
@@ -131,8 +154,9 @@ def _run_health_check_program(
 def setup(check_spec: str):
     _pre_init_health_check(check_spec, output_dir=flags.FLAGS.trainer_dir)
     yield
-    # Skip global health check if there's an exception.
+    # Skip further health checks if there's an exception.
     global_health_check(check_spec, output_dir=flags.FLAGS.trainer_dir)
+    jax_live_devices_health_check(check_spec, output_dir=flags.FLAGS.trainer_dir)
 
 
 def _pre_init_health_check(check_spec: str, *, output_dir: str):
@@ -244,3 +268,68 @@ def global_health_check(check_spec: str, *, output_dir: str):
                 f.write("program error")
             os.kill(os.getpid(), signal.SIGKILL)
         logging.info("Global health check passed in %fs.", time.perf_counter() - start_t)
+
+
+def jax_live_devices_health_check(check_spec: str, *, output_dir: str):
+    """Runs jax live devices health check.
+
+    This function does not run in a subprocess to reuse the global coordinator. Therefore, it must
+    be called after `jax.distributed.initialize()`.
+    """
+    timeout = _parse_spec_and_check_if_should_skip(check_spec, check_type="jax_live_devices")
+    if timeout is None:
+        return
+
+    start_t = time.perf_counter()
+    logging.info("Starting jax live devices health check...")
+
+    def check_fn():
+        all_devices = jax.devices()
+        live_devices = multihost_utils.live_devices(all_devices)
+        if len(live_devices) == len(all_devices):
+            return True, None
+
+        unhealthy_devices = set(all_devices) - set(live_devices)
+        hostnames = os.environ.get("TPU_WORKER_HOSTNAMES", "").split(",")
+        unhealthy_info = []
+        for device in unhealthy_devices:
+            process_index = device.process_index
+            # TODO verify if TPU_WORKER_HOSTNAMES are ordered by process_id
+            hostname = hostnames[process_index] if process_index < len(hostnames) else "unknown"
+            unhealthy_info.append(
+                f"Device ID: {device.id}, Process Index: {process_index}, Hostname: {hostname}"
+            )
+        return False, unhealthy_info
+
+    def get_return_value(fn, return_val):
+        return_val[0] = fn()
+
+    return_val = [None]
+    th = threading.Thread(target=get_return_value, args=(check_fn, return_val))
+    th.start()
+    th.join(timeout=timeout)
+    timestamp = datetime.now().strftime("%m%d%H%M%S")
+    fname = f"{timestamp}-jax-live-devices-{os.environ['HOSTNAME']}-{os.environ['NODE_NAME']}.txt"
+    if th.is_alive():
+        # Join timed out.
+        logging.error("Jax live devices health check failed due to timeout!")
+
+        with fs_open(os.path.join(output_dir, fname), "w") as f:
+            f.write("timeout")
+        # Normal exit via sys.exit may not work when health check program hanged.
+        os.kill(os.getpid(), signal.SIGKILL)
+    else:
+        is_healthy, unhealthy_info = return_val[0]
+        if not is_healthy:
+            error_message = "Jax live devices health check failed due to program error!"
+            if unhealthy_info:
+                error_message += " Unhealthy devices:\n" + "\n".join(unhealthy_info)
+            logging.error(error_message)
+            with fs_open(os.path.join(output_dir, fname), "w") as f:
+                f.write(
+                    "program error: " + ", ".join(unhealthy_info)
+                    if unhealthy_info
+                    else "program error"
+                )
+            os.kill(os.getpid(), signal.SIGKILL)
+        logging.info("Jax live devices health check passed in %fs.", time.perf_counter() - start_t)

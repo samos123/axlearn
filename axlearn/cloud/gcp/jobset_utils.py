@@ -6,6 +6,7 @@ import io
 import logging
 import math
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 from urllib.parse import urlparse
@@ -22,6 +23,7 @@ from axlearn.cloud.common.utils import (
     AcceleratorConfig,
     FlagConfigurable,
     accelerator_flags,
+    namespaced,
     parse_kv_flags,
 )
 from axlearn.cloud.gcp.config import gcp_settings
@@ -30,7 +32,7 @@ from axlearn.cloud.gcp.system_characteristics import (
     GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS,
     USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS,
 )
-from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_workers
+from axlearn.cloud.gcp.tpu import get_default_env, infer_tpu_cores, infer_tpu_workers
 from axlearn.cloud.gcp.utils import validate_jobset_name
 from axlearn.common.compiler_options import infer_tpu_type
 from axlearn.common.config import REQUIRED, Required, config_class
@@ -79,6 +81,9 @@ class GCSFuseMount(VolumeMount):
         ephemeral_gb: Defaults to 5Gi. Used for staging temp files before uploading to GCS.
         shared_memory: Default to 1Gi. Used for e.g. Grain-related jobs which store prefetch
             elements in shared_memory. Setting it to 0 means unlimited shared_memory.
+        http_client_timeout: Defaults to 0s. Specifies how long the Cloud Storage FUSE HTTP client
+            can wait to get a response from the server before timing out. Setting it to 0s means no
+            limit.
         read_only: Whether the mount should be read-only.
     """
 
@@ -89,6 +94,7 @@ class GCSFuseMount(VolumeMount):
     memory: str = "256Mi"
     ephemeral_gb: str = "5Gi"
     shared_memory: str = "1Gi"
+    http_client_timeout: str = "0s"
 
 
 @dataclass(kw_only=True)
@@ -165,6 +171,7 @@ class BaseReplicatedJob(FlagConfigurable):
     def define_flags(cls, fv):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
+        # NOTE: the parent typically sets these flags, so we leave them as None.
         flags.DEFINE_string("name", None, "Name of the job.", **common_kwargs)
         flags.DEFINE_string(
             "output_dir",
@@ -189,6 +196,33 @@ class BaseReplicatedJob(FlagConfigurable):
         raise NotImplementedError(type(self))
 
 
+@namespaced(mapping="inner")
+class CompositeReplicatedJob(BaseReplicatedJob):
+    """Builds a composite replicated job spec."""
+
+    @config_class
+    class Config(BaseReplicatedJob.Config):
+        """Configures SingleReplicatedJob.
+
+        Attributes:
+            inner: A mapping from job_name to child replicated job.
+        """
+
+        inner: Required[dict[str, BaseReplicatedJob.Config]] = REQUIRED
+
+    def __init__(self, cfg: Config, **kwargs):
+        super().__init__(cfg, **kwargs)
+        self._inner = {
+            namespace: child.instantiate(**kwargs) for namespace, child in cfg.inner.items()
+        }
+
+    def __call__(self) -> Sequence[Nested[Any]]:
+        composite = []
+        for child in self._inner.values():
+            composite.extend(child())
+        return composite
+
+
 class SingleReplicatedJob(BaseReplicatedJob):
     """Builds a single replicated job spec."""
 
@@ -197,6 +231,7 @@ class SingleReplicatedJob(BaseReplicatedJob):
         """Configures SingleReplicatedJob.
 
         Attributes:
+            job_name: Name of the replicated job.
             command: Command to be executed.
             accelerator: Accelerator configuration.
             project: GCP Project.
@@ -209,6 +244,8 @@ class SingleReplicatedJob(BaseReplicatedJob):
             enable_pre_provisioner: Whether to enable pre-provisioner.
         """
 
+        # We disambiguate from "name" which often refers to the jobset.
+        job_name: Required[str] = REQUIRED
         command: Required[str] = REQUIRED
         project: Required[str] = REQUIRED
         accelerator: AcceleratorConfig = AcceleratorConfig()
@@ -224,6 +261,7 @@ class SingleReplicatedJob(BaseReplicatedJob):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
         accelerator_flags(**common_kwargs)
+        flags.DEFINE_string("job_name", "job", "Replicated job name.", **common_kwargs)
         flags.DEFINE_string("command", None, "Command to execute.", **common_kwargs)
         flags.DEFINE_multi_string("env", [], "Env var in the format key:value.", **common_kwargs)
         flags.DEFINE_multi_string(
@@ -257,7 +295,9 @@ class SingleReplicatedJob(BaseReplicatedJob):
         cfg.service_account = cfg.service_account or gcp_settings(
             "k8s_service_account", default="default", fv=fv
         )
-        cfg.accelerator.set(instance_type=fv.instance_type, num_replicas=fv.num_replicas)
+        cfg.accelerator.set(
+            instance_type=fv.instance_type, num_replicas=fv.num_replicas, topology=fv.topology
+        )
         # pylint: disable=missing-kwoa
         # pytype: disable=missing-parameter
         if fv.gcsfuse_mount_spec:
@@ -267,16 +307,40 @@ class SingleReplicatedJob(BaseReplicatedJob):
                 HostMount(**parse_kv_flags(item.split(","), delimiter="="))
                 for item in fv.host_mount_spec
             ]
+        if fv.topology:
+            cls.verify_custom_topology_availability(cfg.accelerator)
         # pytype: enable=missing-parameter
         return cfg
 
+    @classmethod
+    def verify_custom_topology_availability(cls, accelerator: AcceleratorConfig):
+        tpu_type = infer_tpu_type(accelerator.instance_type)
+        cores = infer_tpu_cores(tpu_type)
+        topology = accelerator.topology
+        if not tpu_type.startswith("v5p") or cores < 128:
+            raise ValueError("custom topology is only available for v5p-128 and above.")
+        if not re.fullmatch(r"\d+x\d+x\d+", topology):
+            raise ValueError("custom topology only supports 3d topology for v5p.")
+        dims = [int(dim.strip()) for dim in topology.split("x")]
+        if any(dim == 1 for dim in dims):
+            # Note that v5p-8's topology is 2*2*1, but v5p-8 doesn't support custom
+            # topology so it will fail checks above. So we don't specially handle it
+            # in this branch.
+            raise ValueError("There should be no 1 in each topology dimension.")
+        cores_in_topology = math.prod(dims)
+        if cores != cores_in_topology:
+            raise ValueError(
+                f"custom topology {topology} doesn't match the number of cores in "
+                f"instance_type {accelerator.instance_type}."
+            )
 
-class TPUReplicatedJob(SingleReplicatedJob):
-    """Builds a replicated jobspec for TPU, to be used with JobSet API."""
+
+class TPUJobBuilder(SingleReplicatedJob):
+    """Common base class for TPU Specs"""
 
     @config_class
     class Config(SingleReplicatedJob.Config):
-        """Configures TPUReplicatedJob.
+        """Configures TPUJobBuilder.
 
         Attributes:
             reservation: If specified, the TPU reservation name. This is not necessarily specific to
@@ -307,7 +371,6 @@ class TPUReplicatedJob(SingleReplicatedJob):
                 to attach to the node pool. This is needed to support multiple NIC.
                 Refer to GKE TPU provisioner for more context:
                 https://github.com/GoogleCloudPlatform/ai-on-gke/blob/5f256eed7075a5cb8e73cd72328aea46237b8ce6/tpu-provisioner/internal/cloud/common.go#L29-L31
-            replicated_job_name: Name of the replicated job. Default value is "job".
         """
 
         reservation: Optional[str] = None
@@ -317,7 +380,6 @@ class TPUReplicatedJob(SingleReplicatedJob):
         enable_tpu_smart_repair: bool = False
         priority_class: Optional[str] = None
         additional_node_networks: Optional[str] = None
-        replicated_job_name: str = "job"
 
     @classmethod
     def define_flags(cls, fv: flags.FlagValues):
@@ -345,7 +407,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
 
     @classmethod
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
-        cfg: TPUReplicatedJob.Config = super().from_flags(fv, **kwargs)
+        cfg: TPUJobBuilder.Config = super().from_flags(fv, **kwargs)
         default_env = get_default_env(
             tpu_type=infer_tpu_type(fv.instance_type),
             num_tpu_slices=fv.num_replicas,
@@ -369,7 +431,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
 
     def __init__(self, cfg: Config, *, bundler: Bundler):
         super().__init__(cfg, bundler=bundler)
-        cfg: TPUReplicatedJob.Config = self.config
+        cfg: TPUJobBuilder.Config = self.config
         if cfg.output_dir is None:
             raise ValueError("cfg.output_dir is required.")
         self._tpu_type = infer_tpu_type(cfg.accelerator.instance_type)
@@ -379,14 +441,12 @@ class TPUReplicatedJob(SingleReplicatedJob):
             cfg.name,
             num_workers=infer_tpu_workers(self._tpu_type),
             num_replicas=cfg.accelerator.num_replicas,
-            job_name=cfg.replicated_job_name,
+            job_name=cfg.job_name,
         )
         self._output_volume_mount = dict(name="shared-output", mountPath="/output")
         if cfg.additional_node_networks and not cfg.service_account:
             raise ValueError("service_account must be set if additional_node_networks is set.")
-        self._load_balancer = _LoadBalancer(
-            jobset_name=cfg.name, replicated_job_name=cfg.replicated_job_name
-        )
+        self._load_balancer = _LoadBalancer(jobset_name=cfg.name, replicated_job_name=cfg.job_name)
 
     def _maybe_add_volume_mount(self, volume_mounts: list[dict], *, spec: Optional[VolumeMount]):
         if spec:
@@ -400,7 +460,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         Returns:
             A nested dict corresponding to a k8s Container config.
         """
-        cfg: TPUReplicatedJob.Config = self.config
+        cfg: TPUJobBuilder.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         volume_mounts = [self._output_volume_mount]
 
@@ -470,7 +530,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         Returns:
             A nested dict corresponding to a k8s Container config.
         """
-        cfg: TPUReplicatedJob.Config = self.config
+        cfg: TPUJobBuilder.Config = self.config
         output_volume_mount = output_volume_mount or self._output_volume_mount
         dst = f"{cfg.output_dir}/output/$HOSTNAME/"
         interval_s = 60
@@ -505,7 +565,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
         Returns:
             A nested dict corresponding to a k8s Pod template, including the pod metadata and spec.
         """
-        cfg: TPUReplicatedJob.Config = self.config
+        cfg: TPUJobBuilder.Config = self.config
         system = USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS[self._tpu_type]
         annotations, labels, selector, volumes, tolerations = {}, {}, {}, [], []
 
@@ -545,8 +605,9 @@ class TPUReplicatedJob(SingleReplicatedJob):
                         volumeAttributes=dict(
                             bucketName=parsed.netloc,
                             # pylint: disable=line-too-long
-                            mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1",
-                            gcsfuseMetadataPrefetchOnMount="true",  # Improves first-time read.
+                            mountOptions=f"only-dir={parsed.path.lstrip('/')},implicit-dirs,metadata-cache:ttl-secs:-1,metadata-cache:stat-cache-max-size-mb:-1,metadata-cache:type-cache-max-size-mb:-1,kernel-list-cache-ttl-secs=-1,gcs-connection:http-client-timeout:{cfg.gcsfuse_mount.http_client_timeout}",
+                            gcsfuseMetadataPrefetchOnMount="false",  # Improves first-time read.
+                            disableMetrics="false",  # Enables GCSFuse metrics by default.
                         ),
                     ),
                 )
@@ -663,7 +724,7 @@ class TPUReplicatedJob(SingleReplicatedJob):
             hostAliases=[metadata_host_alias],
             nodeSelector={
                 "cloud.google.com/gke-tpu-accelerator": system.gke_accelerator,
-                "cloud.google.com/gke-tpu-topology": system.topology,
+                "cloud.google.com/gke-tpu-topology": cfg.accelerator.topology or system.topology,
                 **selector,
             },
             tolerations=tolerations,
@@ -693,6 +754,12 @@ class TPUReplicatedJob(SingleReplicatedJob):
             spec=spec,
         )
 
+
+class TPUReplicatedJob(TPUJobBuilder):
+    """Builds a replicated job spec for a generic TPU job to be used with the JobSet API"""
+
+    Config = TPUJobBuilder.Config
+
     def __call__(self) -> Sequence[Nested[Any]]:
         """See `BaseReplicatedJob` docstring for details."""
         cfg: TPUReplicatedJob.Config = self.config
@@ -709,65 +776,169 @@ class TPUReplicatedJob(SingleReplicatedJob):
         # NOTE: the suffix here impacts how long job names can be.
         return [
             dict(
-                name=cfg.replicated_job_name,
+                name=cfg.job_name,
                 replicas=cfg.accelerator.num_replicas,
                 template=job_spec,
             )
         ]
 
 
-# TODO(markblee): Generalize this to support different GPU types without different classes.
-class A3ReplicatedJob(SingleReplicatedJob):
-    """Builds a replicated job spec for an A3 GPU job, to be used with JobSet API."""
+class GPUReplicatedJob(SingleReplicatedJob):
+    """Builds a replicated job spec for a generic GPU job (A3, A3 Mega, A3 Ultra, A4),
+    to be used with JobSet API.
+    """
 
     Config = SingleReplicatedJob.Config
 
-    def __init__(self, cfg: Config, *, bundler: Bundler):
-        if cfg.gcsfuse_mount:
-            raise NotImplementedError("GCSFuse is not supported on GKE with GPU.")
-        instance_type = cfg.accelerator.instance_type
-        if not instance_type.startswith("gpu-a3-highgpu"):
-            raise NotImplementedError(
-                f"The instance type {instance_type} is not supported on GKE with GPU. "
-                "Only gpu-a3-highgpu-8g is supported."
-            )
-        super().__init__(cfg, bundler=bundler)
+    def _build_init_containers(self) -> list[Nested[Any]]:
+        return []
 
-    def _build_a3_sidecar_container(self) -> Nested[Any]:
-        """Builds a sidecar container which is required by A3
-        for GPU to GPU RDMA like networking.
+    def _build_main_container(self) -> Nested[Any]:
+        """Builds the base container with common elements across all GPU jobs
 
         Returns:
-            A nested dict of the sidecar container.
+            A nested dict corresponding to a k8s Container config.
         """
+        cfg: GPUReplicatedJob.Config = self.config
+
         volume_mounts = [
-            {
-                "name": "nvidia-install-dir-host",
-                "mountPath": "/usr/local/nvidia/lib64",
-            },
-            {
-                "name": "tcpx-socket",
-                "mountPath": "/run/tcpx",
-            },
+            {"name": "shared-memory", "mountPath": "/dev/shm"},
+            {"name": "nvidia-install-dir-host", "mountPath": "/usr/local/nvidia/lib64"},
         ]
 
-        command = [
-            "bash",
-            "-c",
-            'set -x; /tcpgpudmarxd/build/app/tcpgpudmarxd --gpu_nic_preset a3vm  \
-                --gpu_shmem_type fd --uds_path /run/tcpx \
-                --setup_param "--verbose 128 2 0" & \n\
-            while [ ! -f /run/tcpx/terminated ]; do sleep 10; done;',
+        # These are common across all GPUReplicatedJobs, used for connecting between replicas
+        env_vars: dict[str, Nested[str]] = {}
+        env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-{cfg.job_name}-0-0.{cfg.name}:8080"
+        env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
+
+        # List of XLA flags across all A3 and A4 instances
+        global_gpu_xla_flags = [
+            "--xla_gpu_enable_latency_hiding_scheduler=true",
+            "--xla_gpu_enable_triton_gemm=false",
+            "--xla_gpu_enable_pipelined_all_gather=true",
+            "--xla_gpu_enable_pipelined_reduce_scatter=true",
+            "--xla_gpu_enable_pipelined_all_reduce=true",
+            "--xla_gpu_enable_while_loop_double_buffering=true",
+            "--xla_gpu_enable_all_gather_combine_by_dim=false",
+            "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
+            "--xla_disable_hlo_passes=rematerialization",
         ]
+        env_vars["XLA_FLAGS"] = " ".join(global_gpu_xla_flags)
+        # Leave trailing space for A3 / A4-specific XLA flags to be added later
+        env_vars["XLA_FLAGS"] += " "
 
         return dict(
-            name="tcpx-daemon",
-            image="us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpx/tcpgpudmarxd-dev:v2.0.11",
-            securityContext={"privileged": True},
-            command=command,
-            env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
+            name=cfg.name,
+            image=self._bundler.id(cfg.name),
+            ports=[
+                dict(containerPort=8080),  # Port for MXLA coordinator.
+            ],
+            securityContext=dict(privileged=True),
+            # TODO(markblee): Improve SIGTERM behavior for command.
+            resources=dict(limits={"nvidia.com/gpu": "8"}),
+            env=env_vars,
             volumeMounts=volume_mounts,
         )
+
+    def _build_volumes(self) -> Nested[Any]:
+        """Builds a config for volumes."""
+        volumes = [
+            {
+                "name": "shared-memory",
+                "emptyDir": {"medium": "Memory"},
+            },
+            {
+                "name": "nvidia-install-dir-host",
+                "hostPath": {"path": "/home/kubernetes/bin/nvidia/lib64"},
+            },
+        ]
+
+        return volumes
+
+    def _build_pod(self) -> Nested[Any]:
+        """Builds a config for a single Pod, which is a set of containers.
+
+        https://kubernetes.io/docs/concepts/workloads/pods
+
+        Returns:
+            A nested dict corresponding to a k8s Pod template, including the pod metadata and spec.
+        """
+        cfg: GPUReplicatedJob.Config = self.config
+        volumes = self._build_volumes()
+        annotations = {
+            "kubectl.kubernetes.io/default-container": cfg.name,
+        }
+
+        containers = [self._build_main_container()]
+        init_containers = self._build_init_containers()
+
+        return dict(
+            metadata=dict(annotations=annotations),
+            spec=dict(
+                terminationGracePeriodSeconds=60,
+                # Fail if any pod fails, and allow retries to happen at JobSet level.
+                restartPolicy="Never",
+                initContainers=init_containers,
+                hostNetwork=True,
+                dnsPolicy="ClusterFirstWithHostNet",
+                containers=containers,
+                serviceAccountName=cfg.service_account,
+                volumes=volumes,
+            ),
+        )
+
+    def _build_job(self) -> Nested[Any]:
+        """Builds a config for a single Job, which is a set of Pods.
+
+        https://kubernetes.io/docs/concepts/workloads/controllers/job/
+
+        Returns:
+            A nested dict corresponding to a k8s Job config, including the job metadata and spec.
+        """
+        cfg: GPUReplicatedJob.Config = self.config
+
+        return dict(
+            spec=dict(
+                parallelism=cfg.accelerator.num_replicas,
+                completions=cfg.accelerator.num_replicas,
+                backoffLimit=0,  # Fail the job if any node fails. Retries happen at JobSet level.
+                template=self._build_pod(),
+            ),
+        )
+
+    def __call__(self) -> Sequence[Nested[Any]]:
+        """See `BaseReplicatedJob` docstring for details."""
+        cfg: GPUReplicatedJob.Config = self.config
+        job_spec = dict(
+            spec=dict(
+                parallelism=cfg.accelerator.num_replicas,
+                completions=cfg.accelerator.num_replicas,
+                backoffLimit=0,  # Fail the job if any node fails. Retries happen at JobSet level.
+                template=self._build_pod(),
+            ),
+        )
+        # NOTE: the suffix here impacts how long job names can be.
+        return [dict(name="job", replicas=1, template=job_spec)]
+
+
+class A3HighReplicatedJob(GPUReplicatedJob):
+    """Builds a replicated job spec for an a3-high GPU job, to be used with JobSet API."""
+
+    Config = GPUReplicatedJob.Config
+
+    def _build_volumes(self) -> Nested[Any]:
+        """Builds a config for volumes."""
+
+        return super()._build_volumes() + [
+            {
+                "name": "tcpx-socket",
+                "emptyDir": {},
+            },
+            {
+                "name": "tcpx-nccl-plugin-volume",
+                "emptyDir": {},
+            },
+        ]
 
     def _build_main_container(self) -> Nested[Any]:
         """Builds the config for the container running the job.
@@ -775,21 +946,18 @@ class A3ReplicatedJob(SingleReplicatedJob):
         Returns:
             A nested dict corresponding to a k8s Container config.
         """
-        cfg: A3ReplicatedJob.Config = self.config
+        cfg: A3HighReplicatedJob.Config = self.config
 
-        volume_mounts = [
-            {"name": "shared-memory", "mountPath": "/dev/shm"},
+        base_main_container: Nested[Any] = super()._build_main_container()
+        volume_mounts = base_main_container["volumeMounts"] + [
             {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
-            {"name": "nvidia-install-dir-host", "mountPath": "/usr/local/nvidia/lib64"},
             {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
         ]
 
-        env_vars: dict[str, str] = {}
-        env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
-        env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
+        env_vars = base_main_container["env"]
 
-        default_xla_flags = [
-            "--xla_gpu_enable_latency_hiding_scheduler=true",
+        # XLA flags for a3-high (H100 with TCPX)
+        platform_xla_flags = [
             # Allows combining multiple all reduce into single all reduce.
             "--xla_gpu_all_reduce_contiguous",
             # Increase combine threshold to 1GB for improved performance.
@@ -798,7 +966,9 @@ class A3ReplicatedJob(SingleReplicatedJob):
             "--xla_gpu_all_gather_combine_threshold_bytes=1073741824",
             "--xla_gpu_reduce_scatter_combine_threshold_bytes=1073741824",
         ]
-        env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
+        # Add platform-specific XLA flags to the common flags
+        # (see global_gpu_xla_flags in GPUReplicatedJob)
+        env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
 
         env_vars.update(
             {
@@ -880,8 +1050,9 @@ class A3ReplicatedJob(SingleReplicatedJob):
             volumeMounts=volume_mounts,
         )
 
-    def _build_a3_init_container(self) -> Nested[Any]:
-        """Builds a config for a single container."""
+    def _build_a3_high_tcpx_init_container(self) -> Nested[Any]:
+        """Builds the init container for TCPX use with a3-high"""
+
         volume_mounts = [
             {
                 "name": "tcpx-nccl-plugin-volume",
@@ -899,17 +1070,240 @@ class A3ReplicatedJob(SingleReplicatedJob):
             volumeMounts=volume_mounts,
         )
 
-    def _build_volumes(self) -> Nested[Any]:
-        """Builds a config for volumes."""
-        volumes = [
-            {
-                "name": "shared-memory",
-                "emptyDir": {"medium": "Memory"},
-            },
+    def _build_a3_high_sidecar_container(self) -> Nested[Any]:
+        """Builds a sidecar container which is required by A3
+        for GPU to GPU RDMA like networking.
+
+        Returns:
+            A nested dict of the sidecar container.
+        """
+        volume_mounts = [
             {
                 "name": "nvidia-install-dir-host",
-                "hostPath": {"path": "/home/kubernetes/bin/nvidia/lib64"},
+                "mountPath": "/usr/local/nvidia/lib64",
             },
+            {
+                "name": "tcpx-socket",
+                "mountPath": "/run/tcpx",
+            },
+        ]
+        # See the reference for TCPX on a3-high linked here:
+        # https://cloud.google.com/compute/docs/gpus/gpudirect#provide-access
+        command = [
+            "bash",
+            "-c",
+            'set -x; /tcpgpudmarxd/build/app/tcpgpudmarxd --gpu_nic_preset a3vm  \
+                --gpu_shmem_type fd --uds_path /run/tcpx \
+                --setup_param "--verbose 128 2 0" & \n\
+            while [ ! -f /run/tcpx/terminated ]; do sleep 10; done;',
+        ]
+
+        return dict(
+            name="tcpx-daemon",
+            image="us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpx/tcpgpudmarxd-dev:latest",
+            securityContext={"privileged": True},
+            command=command,
+            env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
+            volumeMounts=volume_mounts,
+        )
+
+    def _build_init_containers(self) -> list[Nested[Any]]:
+        return [self._build_a3_high_tcpx_init_container(), self._build_a3_high_sidecar_container()]
+
+
+class A3MegaReplicatedJob(GPUReplicatedJob):
+    """Builds a replicated job spec for an a3-mega GPU job, to be used with JobSet API."""
+
+    Config = GPUReplicatedJob.Config
+
+    def _build_a3_mega_tcpx_init_container(self) -> Nested[Any]:
+        """Builds a config for a single container."""
+        volume_mounts = [
+            {
+                "name": "tcpx-nccl-plugin-volume",
+                "mountPath": "/var/lib/tcpx",
+            },
+        ]
+        # a3-mega uses TCPXO, slightly different from a3-high TCPX. See reference:
+        # https://cloud.google.com/cluster-toolkit/docs/machine-learning/a3-mega-enable-gpudirect-tcpxo
+        command = [
+            "bash",
+            "-c",
+            'set -ex; chmod 755 /scripts/container_entry.sh; \n\
+             /scripts/container_entry.sh install; \n\
+             mkdir -p /usr/lib/tcpx/lib64; \n\
+             cp -r /var/lib/tcpxo/lib64/. /usr/lib/tcpx/lib64; \n\
+             echo "installation finishes";',
+        ]
+        return dict(
+            name="tcpx-nccl-plugin-installer",
+            image=(
+                # pylint: disable=line-too-long
+                "us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpxo/nccl-plugin-gpudirecttcpx-dev:latest"
+            ),
+            command=command,
+            env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
+            volumeMounts=volume_mounts,
+        )
+
+    def _build_a3_mega_tcpx_sidecar_container(self) -> Nested[Any]:
+        """Builds a sidecar container which is required by A3
+        for GPU to GPU RDMA like networking.
+
+        Returns:
+            A nested dict of the sidecar container.
+        """
+        volume_mounts = [
+            {
+                "name": "nvidia-install-dir-host",
+                "mountPath": "/usr/local/nvidia/lib64",
+            },
+            {
+                "name": "tcpx-socket",
+                "mountPath": "/run/tcpx",
+            },
+        ]
+        # a3-mega uses TCPXO, slightly different from a3-high TCPX. See reference:
+        # https://cloud.google.com/cluster-toolkit/docs/machine-learning/a3-mega-enable-gpudirect-tcpxo
+        command = [
+            "bash",
+            "-c",
+            "set -ex; chmod 755 /fts/entrypoint_rxdm_container.sh; \n\
+            /fts/entrypoint_rxdm_container.sh --num_hops=2 --num_nics=8 \
+                --uid= --alsologtostderr &\n\
+            while [ ! -f /run/tcpx/terminated ]; do sleep 10; done;",
+        ]
+
+        return dict(
+            name="tcpx-daemon",
+            image="us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpxo/tcpgpudmarxd-dev:latest",
+            securityContext={"privileged": True},
+            command=command,
+            env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
+            volumeMounts=volume_mounts,
+            restartPolicy="Always",
+        )
+
+    def _build_init_containers(self) -> list[Nested[Any]]:
+        return [
+            self._build_a3_mega_tcpx_init_container(),
+            self._build_a3_mega_tcpx_sidecar_container(),
+        ]
+
+    def _build_main_container(self) -> Nested[Any]:
+        """Builds the config for the container running the job.
+
+        Returns:
+            A nested dict corresponding to a k8s Container config.
+        """
+        cfg: A3MegaReplicatedJob.Config = self.config
+
+        base_main_container: Nested[Any] = super()._build_main_container()
+        volume_mounts = base_main_container["volumeMounts"] + [
+            {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
+            {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
+            {"name": "aperture-devices", "mountPath": "/dev/aperture_devices"},
+        ]
+
+        env_vars = base_main_container["env"]
+
+        # A list of XLA flags and their functions is linked here:
+        # https://docs.jax.dev/en/latest/xla_flags.html#gpu-xla-flags
+        # These flags have been tuned by GCP for a3-mega (H100 with TCPXO)
+        platform_xla_flags = [
+            "--xla_gpu_enable_highest_priority_async_stream=true",
+            "--xla_gpu_all_reduce_combine_threshold_bytes=134217728",
+            "--xla_gpu_all_gather_combine_threshold_bytes=1073741824",
+            "--xla_gpu_reduce_scatter_combine_threshold_bytes=33554432",
+        ]
+        # Add platform-specific XLA flags to the common flags
+        # (see global_gpu_xla_flags in GPUReplicatedJob)
+        env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
+
+        env_vars.update(
+            {
+                "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
+                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
+                "TF_FORCE_GPU_ALLOW_GROWTH": "true",
+                # The NCCL_FASTRAK config cannot be changed
+                # pylint: disable=line-too-long
+                # This config is based on: https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3mega/nemo-training/templates/nemo-launcher-job.yaml
+                "NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY": "/dev/aperture_devices",
+                "NCCL_FASTRAK_CTRL_DEV": "eth0",
+                "NCCL_FASTRAK_IFNAME": "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8",
+                "NCCL_FASTRAK_USE_LLCM": "1",
+                "NCCL_FASTRAK_NUM_FLOWS": "2",
+                "NCCL_FASTRAK_USE_SNAP": "1",
+                "NCCL_FASTRAK_PLUGIN_ACCEPT_TIMEOUT_MS": "600000",
+                "NCCL_FASTRAK_ENABLE_CONTROL_CHANNEL": "0",
+                "NCCL_FASTRAK_ENABLE_HOTPATH_LOGGING": "0",
+                "NCCL_MIN_NCHANNELS": "4",
+                "NCCL_TUNER_PLUGIN": "libnccl-tuner.so",
+                "NCCL_TUNER_CONFIG_PATH": "/root/axlearn/cloud/gcp/nccl/a3_mega/tuner_config.txtpb",
+                "NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE": (
+                    "/root/axlearn/cloud/gcp/nccl/a3_mega/guest_config.txtpb"
+                ),
+                # Set to 0 to encourage rail alignment.
+                "NCCL_CROSS_NIC": "0",
+                "NCCL_ALGO": "Ring,Tree",
+                # TCPX only supports Simple protocol.
+                "NCCL_PROTO": "Simple",
+                "NCCL_DEBUG": "WARN",
+                "NCCL_DEBUG_SUBSYS": "INIT,GRAPH,ENV,TUNING,NET,VERSION",
+                "NCCL_NET_GDR_LEVEL": "PIX",
+                "NCCL_DYNAMIC_CHUNK_SIZE": "524288",
+                "NCCL_P2P_NET_CHUNKSIZE": "524288",
+                "NCCL_P2P_PCI_CHUNKSIZE": "524288",
+                "NCCL_P2P_NVL_CHUNKSIZE": "1048576",
+                # Use the system NIC for NCCL control plane comms.
+                "NCCL_SOCKET_IFNAME": "eth0",
+                # TCPX is not compatible with NVLS.
+                "NCCL_NVLS_ENABLE": "0",
+            }
+        )
+
+        # Override env vars with user provided env vars.
+        env_vars.update(cfg.env_vars)
+        # K8s expects each env variable to be a dict.
+        k8s_env_vars = [{"name": name, "value": value} for name, value in env_vars.items()]
+        k8s_env_vars.append(
+            {
+                "name": "PROCESS_ID",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": (
+                            "metadata.annotations['batch.kubernetes.io/job-completion-index']"
+                        ),
+                    }
+                },
+            },
+        )
+
+        user_cmd = cfg.command
+        if user_cmd is None:
+            raise ValueError("Command should not be None.")
+        user_cmd += "; touch /run/tcpx/terminated"
+        command = ["bash", "-c", user_cmd]
+
+        return dict(
+            name=cfg.name,
+            image=self._bundler.id(cfg.name),
+            ports=[
+                dict(containerPort=8080),  # Port for MXLA coordinator.
+            ],
+            securityContext=dict(privileged=True),
+            # TODO(markblee): Improve SIGTERM behavior for command.
+            command=command,
+            resources=dict(limits={"nvidia.com/gpu": "8"}),
+            env=k8s_env_vars,
+            volumeMounts=volume_mounts,
+        )
+
+    def _build_volumes(self) -> Nested[Any]:
+        """Builds a config for volumes."""
+
+        return super()._build_volumes() + [
             {
                 "name": "tcpx-socket",
                 "emptyDir": {},
@@ -918,71 +1312,215 @@ class A3ReplicatedJob(SingleReplicatedJob):
                 "name": "tcpx-nccl-plugin-volume",
                 "emptyDir": {},
             },
+            {
+                "name": "aperture-devices",
+                "hostPath": {"path": "/dev/aperture_devices"},
+            },
         ]
 
-        return volumes
 
-    def _build_pod(self) -> Nested[Any]:
-        """Builds a config for a single Pod, which is a set of containers.
+class A3UltraReplicatedJob(GPUReplicatedJob):
+    """Builds a replicated job spec for an a3-ultra GPU job, to be used with JobSet API."""
 
-        https://kubernetes.io/docs/concepts/workloads/pods
+    Config = GPUReplicatedJob.Config
 
-        Returns:
-            A nested dict corresponding to a k8s Pod template, including the pod metadata and spec.
-        """
-        cfg: A3ReplicatedJob.Config = self.config
-        volumes = self._build_volumes()
-        annotations = {
-            "kubectl.kubernetes.io/default-container": cfg.name,
-        }
-
-        containers = [self._build_main_container(), self._build_a3_sidecar_container()]
-        init_containers = [self._build_a3_init_container()]
-
-        return dict(
-            metadata=dict(annotations=annotations),
-            spec=dict(
-                terminationGracePeriodSeconds=60,
-                # Fail if any pod fails, and allow retries to happen at JobSet level.
-                restartPolicy="Never",
-                initContainers=init_containers,
-                hostNetwork=True,
-                dnsPolicy="ClusterFirstWithHostNet",
-                containers=containers,
-                serviceAccountName=cfg.service_account,
-                volumes=volumes,
-            ),
-        )
-
-    def _build_job(self) -> Nested[Any]:
-        """Builds a config for a single Job, which is a set of Pods.
-
-        https://kubernetes.io/docs/concepts/workloads/controllers/job/
+    def _build_main_container(self) -> Nested[Any]:
+        """Builds the config for the container running the job.
 
         Returns:
-            A nested dict corresponding to a k8s Job config, including the job metadata and spec.
+            A nested dict corresponding to a k8s Container config.
         """
-        cfg: A3ReplicatedJob.Config = self.config
+        cfg: A3UltraReplicatedJob.Config = self.config
+
+        base_main_container: Nested[Any] = super()._build_main_container()
+        volume_mounts = base_main_container["volumeMounts"] + [
+            {"name": "gib", "mountPath": "/usr/local/gib"},
+        ]
+
+        env_vars = base_main_container["env"]
+
+        # These flags have been tuned by GCP for a3-ultra (H200 with InfiniBand),
+        # see the following reference:
+        # https://github.com/AI-Hypercomputer/gpu-recipes/blob/dc6ef1afc1492f05e5741356f00cf645a9f1b795/src/helm-charts/a3ultra/maxtext-training/templates/maxtext-configmap.yaml#L26-L38
+        platform_xla_flags = [
+            "--xla_gpu_graph_level=0",
+            "--xla_gpu_all_reduce_combine_threshold_bytes=2147483648",
+            "--xla_gpu_all_gather_combine_threshold_bytes=2147483648",
+            "--xla_gpu_reduce_scatter_combine_threshold_bytes=16777216",
+        ]
+        # Add platform-specific XLA flags to the common flags
+        # (see global_gpu_xla_flags in GPUReplicatedJob)
+        env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
+
+        env_vars.update(
+            {
+                "LD_LIBRARY_PATH": "/usr/local/nvidia/lib64",
+                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
+                "TF_FORCE_GPU_ALLOW_GROWTH": "true",
+                "NCCL_DEBUG": "WARN",
+                "NCCL_CROSS_NIC": "0",
+                "NCCL_NET_GDR_LEVEL": "PIX",
+                "NCCL_P2P_NET_CHUNKSIZE": "131072",
+                "NCCL_P2P_PCI_CHUNKSIZE": "131072",
+                "NCCL_P2P_NVL_CHUNKSIZE": "524288",
+                "NCCL_NVLS_CHUNKSIZE": "524288",
+                "NCCL_IB_GID_INDEX": "3",
+                "NCCL_IB_ADAPTIVE_ROUTING": "1",
+                "NCCL_IB_QPS_PER_CONNECTION": "4",
+                "NCCL_IB_TC": "52",
+                "NCCL_IB_FIFO_TC": "84",
+                "NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE": (
+                    "/root/axlearn/cloud/gcp/nccl/a3_ultra/guest_config.txtpb"
+                ),
+                "NCCL_TUNER_CONFIG_PATH": (
+                    "/root/axlearn/cloud/gcp/nccl/a3_ultra/tuner_config.txtpb"
+                ),
+            }
+        )
+
+        # Override env vars with user provided env vars.
+        env_vars.update(cfg.env_vars)
+        # K8s expects each env variable to be a dict.
+        k8s_env_vars = [{"name": name, "value": value} for name, value in env_vars.items()]
+        k8s_env_vars.append(
+            {
+                "name": "PROCESS_ID",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": (
+                            "metadata.annotations['batch.kubernetes.io/job-completion-index']"
+                        ),
+                    }
+                },
+            },
+        )
+
+        command = ["bash", "-c", cfg.command]
 
         return dict(
-            spec=dict(
-                parallelism=cfg.accelerator.num_replicas,
-                completions=cfg.accelerator.num_replicas,
-                backoffLimit=0,  # Fail the job if any node fails. Retries happen at JobSet level.
-                template=self._build_pod(),
-            ),
+            name=cfg.name,
+            image=self._bundler.id(cfg.name),
+            ports=[
+                dict(containerPort=8080),  # Port for MXLA coordinator.
+            ],
+            securityContext=dict(privileged=True),
+            # TODO(markblee): Improve SIGTERM behavior for command.
+            command=command,
+            resources=dict(limits={"nvidia.com/gpu": "8"}),
+            env=k8s_env_vars,
+            volumeMounts=volume_mounts,
         )
 
-    def __call__(self) -> Sequence[Nested[Any]]:
-        """See `BaseReplicatedJob` docstring for details."""
-        cfg: A3ReplicatedJob.Config = self.config
-        job_spec = dict(
-            spec=dict(
-                parallelism=cfg.accelerator.num_replicas,
-                completions=cfg.accelerator.num_replicas,
-                backoffLimit=0,  # Fail the job if any node fails. Retries happen at JobSet level.
-                template=self._build_pod(),
-            ),
+    def _build_volumes(self) -> Nested[Any]:
+        """Builds a config for volumes."""
+
+        return super()._build_volumes() + [
+            {
+                "name": "gib",
+                "hostPath": {"path": "/home/kubernetes/bin/gib"},
+            },
+        ]
+
+
+class A4HighReplicatedJob(GPUReplicatedJob):
+    """Builds a replicated job spec for an a4-high GPU job, to be used with JobSet API."""
+
+    Config = GPUReplicatedJob.Config
+
+    def _build_main_container(self) -> Nested[Any]:
+        """Builds the config for the container running the job.
+
+        Returns:
+            A nested dict corresponding to a k8s Container config.
+        """
+        cfg: A4HighReplicatedJob.Config = self.config
+
+        base_main_container: Nested[Any] = super()._build_main_container()
+        volume_mounts = base_main_container["volumeMounts"] + [
+            {"name": "gib", "mountPath": "/usr/local/gib"},
+        ]
+
+        env_vars = base_main_container["env"]
+
+        # These flags have been tuned by GCP for a4-high (B200 with InfiniBand)
+        # See Maxtext reference for XLA flags:
+        # https://github.com/AI-Hypercomputer/gpu-recipes/blob/main/training/a4/llama3-1-70b/maxtext-pretraining-gke/values.yaml
+        platform_xla_flags = [
+            "--xla_gpu_all_reduce_combine_threshold_bytes=2147483648",
+            "--xla_gpu_all_gather_combine_threshold_bytes=2147483648",
+            "--xla_gpu_reduce_scatter_combine_threshold_bytes=2147483648",
+            "--xla_gpu_cudnn_gemm_fusion_level=3",
+            "--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL",
+        ]
+        # Add platform-specific XLA flags to the common flags
+        # (see global_gpu_xla_flags in GPUReplicatedJob)
+        env_vars["XLA_FLAGS"] += " ".join(platform_xla_flags)
+
+        env_vars.update(
+            {
+                "LD_LIBRARY_PATH": "/usr/local/nvidia/lib64",
+                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.92",
+                "TF_FORCE_GPU_ALLOW_GROWTH": "true",
+                "NCCL_DEBUG": "WARN",
+                "NCCL_CROSS_NIC": "0",
+                "NCCL_NET_GDR_LEVEL": "PIX",
+                "NCCL_P2P_NET_CHUNKSIZE": "131072",
+                "NCCL_P2P_PCI_CHUNKSIZE": "131072",
+                "NCCL_P2P_NVL_CHUNKSIZE": "524288",
+                "NCCL_NVLS_CHUNKSIZE": "524288",
+                "NCCL_IB_GID_INDEX": "3",
+                "NCCL_IB_ADAPTIVE_ROUTING": "1",
+                "NCCL_IB_QPS_PER_CONNECTION": "4",
+                "NCCL_IB_TC": "52",
+                "NCCL_IB_FIFO_TC": "84",
+                "NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE": (
+                    "/root/axlearn/cloud/gcp/nccl/a4_high/guest_config.txtpb"
+                ),
+                "NCCL_TUNER_CONFIG_PATH": "/root/axlearn/cloud/gcp/nccl/a4_high/tuner_config.txtpb",
+            }
         )
-        # NOTE: the suffix here impacts how long job names can be.
-        return [dict(name="job", replicas=1, template=job_spec)]
+
+        # Override env vars with user provided env vars.
+        env_vars.update(cfg.env_vars)
+        # K8s expects each env variable to be a dict.
+        k8s_env_vars = [{"name": name, "value": value} for name, value in env_vars.items()]
+        k8s_env_vars.append(
+            {
+                "name": "PROCESS_ID",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": (
+                            "metadata.annotations['batch.kubernetes.io/job-completion-index']"
+                        ),
+                    }
+                },
+            },
+        )
+
+        command = ["bash", "-c", cfg.command]
+
+        return dict(
+            name=cfg.name,
+            image=self._bundler.id(cfg.name),
+            ports=[
+                dict(containerPort=8080),  # Port for MXLA coordinator.
+            ],
+            securityContext=dict(privileged=True),
+            # TODO(markblee): Improve SIGTERM behavior for command.
+            command=command,
+            resources=dict(limits={"nvidia.com/gpu": "8"}),
+            env=k8s_env_vars,
+            volumeMounts=volume_mounts,
+        )
+
+    def _build_volumes(self) -> Nested[Any]:
+        """Builds a config for volumes."""
+
+        return super()._build_volumes() + [
+            {
+                "name": "gib",
+                "hostPath": {"path": "/home/kubernetes/bin/gib"},
+            },
+        ]

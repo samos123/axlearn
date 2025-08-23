@@ -7,6 +7,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
 """Optimizer schedules."""
+
 import math
 from typing import Callable, Optional, Union
 
@@ -45,7 +46,8 @@ def polynomial(
     Args:
         begin_step: The first step of polynomial schedule.
         begin_value: The begin value of polynomial schedule.
-        end_step: The end step of polynomial schedule. Must be > begin_step.
+        end_step: The end step of polynomial schedule. Must be >= begin_step.
+            If equal to begin_step, the schedule will always return `begin_value`.
         end_value: The end value of polynomial schedule.
         power: The polynomial power.
 
@@ -53,14 +55,18 @@ def polynomial(
         A ScheduleFn according to the spec.
 
     Raises:
-        ValueError: If begin_step >= end_step.
+        ValueError: If begin_step > end_step.
     """
-    if begin_step >= end_step:
-        raise ValueError(f"begin_step {begin_step} must be < end_step {end_step}.")
+    if begin_step > end_step:
+        raise ValueError(f"begin_step ({begin_step}) must be <= end_step ({end_step}).")
+
+    if begin_step == end_step:
+        # For a zero-duration schedule, always return the starting value.
+        return lambda step: jnp.array(begin_value, dtype=jnp.float32)
 
     def fn(step: Tensor) -> Tensor:
         frac = (step - begin_step) / (end_step - begin_step)
-        frac = jnp.minimum(1.0, jnp.maximum(0.0, frac))
+        frac = jnp.minimum(1.0, jnp.maximum(0.0, frac))  # Clamp progress to [0, 1].
         return begin_value + (frac**power) * (end_value - begin_value)
 
     return fn
@@ -153,28 +159,41 @@ def adafactor(
 def adafactor_decay_rate(c: float = 0.8, step_offset: int = 0) -> ScheduleFn:
     """Returns the beta2 schedule described in section 7.2 of https://arxiv.org/abs/1804.04235.
 
-    step = max(step - step_offset, 0)
-    beta2 = 1 - (step + 1) ** (-c)
+    We assume that the first step is step_offset + 1.
+
+    step = max(step - step_offset, 1)
+    beta2 = 1 - step ** (-c)
 
     Args:
         c: The exponent.
         step_offset: The initial step number. If finetuning with some existing learner state, set
-            offset to the number of steps to ensure that decay rate is reset. If `step_offset` is
-            larger than `step`, we clamp to 0.
+            offset to the number of steps to ensure that decay rate is reset.
+            If `step` is less than or equal to `step_offset`, we clamp to `step - step_offset` to 1.
 
     Returns:
         The beta2 schedule.
     """
 
     def fn(step):
-        step = jnp.maximum(step - step_offset, 0)
-        return 1 - (step + 1) ** (-c)
+        step = jnp.maximum(step - step_offset, 1)
+        return 1 - step ** (-c)
 
     return fn
 
 
 def decay_bias_correction(decay: float) -> ScheduleFn:
-    """Applies bias correction to the given decay.
+    """Returns a ScheduleFn that applies bias correction to the given decay.
+
+    Example usage:
+        sch_fn = decay_bias_correction(0.9)
+        ema = 0
+        for step in range(1, num_steps + 1):
+            # Note that steps start from 1. decay_t will always be 0 when step=1.
+            decay_t = sch_fn(step)
+            # ema will be a bias corrected exponential moving average of value(step), e.g.,
+            # after step 1, ema = value(1);
+            # after step 2, ema = (value(1) * decay + value(2)) / (decay + 1)
+            ema = ema * decay_t + value(step) * (1 - decay_t)
 
     Reference:
     https://arxiv.org/pdf/1804.04235.pdf, section 7.1.
@@ -183,8 +202,8 @@ def decay_bias_correction(decay: float) -> ScheduleFn:
     """
 
     def fn(step):
-        t = jnp.asarray(step, dtype=jnp.float32) + 1.0
-        return decay * (1.0 - jnp.power(decay, t - 1.0)) / (1.0 - jnp.power(decay, t))
+        t = jnp.asarray(step, dtype=jnp.float32)
+        return decay * (1.0 - jnp.power(decay, t - 1)) / (1.0 - jnp.power(decay, t))
 
     return fn
 
@@ -232,6 +251,53 @@ def stepwise(sub: list[Schedule], start_step: list[int]) -> ScheduleFn:
     return fn
 
 
+def segment_wise(segments: list[Schedule], *, segment_steps: list[int]) -> ScheduleFn:
+    """A composite schedule consisting of multiple segments, each with its own schedule.
+
+    The step passed to sub-schedule always starts at 1, so that the values of each sub-schedule do
+    not depend on other sub-schedules.
+
+    Args:
+        segments: a sequence of N sub-schedules.
+        segment_steps: a sequence of N - 1 integers. segment_steps[i] represents the number of steps
+            of segments[i]. Assuming that segments[N-1] = inf, segment[k] will be used for step
+            [1 + sum(segment_steps[:k]), sum(segment_steps[:k + 1])].
+
+    Returns:
+        A composite schedule, s.t.
+        * If step <= 0 or step > sum(segment_steps), the schedule returns 0;
+        * If 1 + sum(segment_steps[:k]) <= step <= sum(segment_steps[:k + 1]), the schedule returns
+          segments[k](step - sum(segment_steps[:k]));
+
+    Raises:
+        ValueError: If segments or segment_steps have incompatible lengths, or if any element of
+            segment_steps is negative.
+    """
+    if len(segments) != len(segment_steps) + 1:
+        raise ValueError(f"Unexpected length: {len(segments)=} != {len(segment_steps)=} + 1")
+    if not all(num_steps >= 0 for num_steps in segment_steps):
+        raise ValueError(f"segment_steps must be >= 0: {segment_steps}")
+    segments = [as_schedule_fn(s) for s in segments]
+
+    # segment[k] is used for steps in range [segment_offsets[k] + 1, segment_offsets[k + 1]].
+    segment_offsets = [0]
+    for num_steps in segment_steps:
+        segment_offsets.append(segment_offsets[-1] + num_steps)
+
+    def fn(step: Tensor) -> Tensor:
+        values = [s(jnp.maximum(1, step - segment_offsets[k])) for k, s in enumerate(segments)]
+        activations = [
+            jnp.logical_and(
+                jax.lax.le(segment_offsets[k] + 1, step),
+                jax.lax.le(step, segment_offsets[k + 1]) if k + 1 < len(segment_offsets) else True,
+            )
+            for k in range(len(segments))
+        ]
+        return sum(value * activation for value, activation in zip(values, activations))
+
+    return fn
+
+
 def cosine_with_linear_warmup(
     peak_lr: float,
     *,
@@ -256,9 +322,9 @@ def cosine_with_linear_warmup(
     Returns:
         A composite schedule.
     """
-    sub, start_step = [], []
+    segments, segment_steps = [], []
     if warmup_steps > 0:
-        sub.append(
+        segments.append(
             config_for_function(polynomial).set(
                 begin_step=0,
                 begin_value=begin_value,
@@ -266,9 +332,9 @@ def cosine_with_linear_warmup(
                 end_value=peak_lr,
             )
         )
-        start_step.append(warmup_steps)
+        segment_steps.append(warmup_steps)
     if decay_begin_step is not None and decay_begin_step > warmup_steps:
-        sub.append(
+        segments.append(
             config_for_function(polynomial).set(
                 begin_step=0,
                 begin_value=peak_lr,
@@ -276,17 +342,70 @@ def cosine_with_linear_warmup(
                 end_value=peak_lr,
             )
         )
-        start_step.append(decay_begin_step)
-    sub.append(
+        segment_steps.append(decay_begin_step - warmup_steps)
+    cosine_decay_steps = max_step - sum(segment_steps or [])
+    segments.append(
         config_for_function(cosine_decay_schedule).set(
             init_value=peak_lr,
-            decay_steps=max_step - start_step[-1] if start_step else max_step,
+            decay_steps=cosine_decay_steps,
             alpha=alpha,
         )
     )
-    return stepwise(
-        sub=sub,
-        start_step=start_step,
+    return segment_wise(segments=segments, segment_steps=segment_steps)
+
+
+def warmup_stable_decay(
+    peak_lr: float,
+    *,
+    max_step: int,
+    decay_begin_step: int,
+    warmup_steps: int = 500,
+    begin_value: float = 0.0,
+    alpha: float = 0.0,
+) -> ScheduleFn:
+    """Warmup stable decay (WSD) learning rate schedule. Linear warmup + constant lr + linear decay.
+
+    Args:
+        peak_lr: The peak learning rate corresponding to the stable part of the schedule.
+        max_step: The total number of steps from warmup + stable + decay.
+        decay_begin_step: The step to begin linear decay. The learning rate is kept constant
+            in [warmup_steps, decay_begin_step).
+        warmup_steps: The number of steps of the warm-up schedule. Skip warm-up if set to 0.
+        begin_value: The begin value of the linear warm-up.
+        alpha: The multiplier of peak_lr used to determine the final lr at the end of decay phase.
+
+    Returns:
+        A composite schedule.
+
+    Raises:
+        ValueError: If decay_begin_step < warmup_steps, or if max_step < decay_begin_step.
+    """
+    if decay_begin_step < warmup_steps:
+        raise ValueError(
+            f"decay_begin_step ({decay_begin_step}) must be >= warmup_steps ({warmup_steps})."
+        )
+    if max_step < decay_begin_step:
+        raise ValueError(f"max_step ({max_step}) must be >= decay_begin_step ({decay_begin_step}).")
+
+    return segment_wise(
+        segments=[
+            config_for_function(polynomial).set(
+                begin_step=0,
+                begin_value=begin_value,
+                end_step=warmup_steps,
+                end_value=peak_lr,
+            ),
+            config_for_function(constant_schedule).set(
+                value=peak_lr,
+            ),
+            config_for_function(polynomial).set(
+                begin_step=0,
+                begin_value=peak_lr,
+                end_step=max_step - decay_begin_step,
+                end_value=peak_lr * alpha,
+            ),
+        ],
+        segment_steps=[warmup_steps, decay_begin_step - warmup_steps],
     )
 
 
@@ -306,8 +425,8 @@ def constant_with_linear_warmup(
     Returns:
         A composite schedule.
     """
-    return stepwise(
-        sub=[
+    return segment_wise(
+        segments=[
             config_for_function(polynomial).set(
                 begin_step=0,
                 begin_value=begin_value,
@@ -318,7 +437,7 @@ def constant_with_linear_warmup(
                 value=peak_lr,
             ),
         ],
-        start_step=[warmup_steps],
+        segment_steps=[warmup_steps],
     )
 
 
@@ -343,8 +462,8 @@ def linear_schedule_with_warmup(
     Returns:
         A composite schedule.
     """
-    return stepwise(
-        sub=[
+    return segment_wise(
+        segments=[
             config_for_function(polynomial).set(
                 begin_step=0, begin_value=begin_value, end_step=warmup_steps, end_value=peak_lr
             ),
@@ -355,11 +474,13 @@ def linear_schedule_with_warmup(
                 end_value=end_value,
             ),
         ],
-        start_step=[warmup_steps],
+        segment_steps=[warmup_steps],
     )
 
 
-def ema_schedule(decay: float = 0.9999, *, warmup_steps: int = 1) -> ScheduleFn:
+def ema_schedule(
+    decay: float = 0.9999, *, warmup_steps: int = 1, step_offset: int = 0
+) -> ScheduleFn:
     """Ema decay schedule with warm-up.
 
     The ema decay is 0, 1/2, 2/3, 3/4, 4/5, ... during warm-up, and then is constant at decay.
@@ -367,6 +488,8 @@ def ema_schedule(decay: float = 0.9999, *, warmup_steps: int = 1) -> ScheduleFn:
     Args:
         decay: ema decay.
         warmup_steps: The number of steps of the warm-up schedule.
+        step_offset: The initial step number.
+            If `step` is less than or equal to `step_offset`, we clamp to `step - step_offset` to 0.
 
     Returns:
         A ema decay schedule.
@@ -378,6 +501,7 @@ def ema_schedule(decay: float = 0.9999, *, warmup_steps: int = 1) -> ScheduleFn:
         raise ValueError("warmup_steps must be > 0.")
 
     def fn(step):
+        step = jnp.maximum(step - step_offset, 0)
         return step / (1.0 + step) * (step < warmup_steps) + decay * (step >= warmup_steps)
 
     return fn

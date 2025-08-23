@@ -4,9 +4,61 @@
 
 import sys
 import types
+import unittest
+from contextlib import ExitStack, contextmanager
+from typing import Iterable, Type, TypeVar
 from unittest.mock import MagicMock
 
+_MOCKED_OPENAI_MODULES = frozenset(
+    [
+        "openai",
+        "openai.types",
+        "openai.types.chat",
+        "openai.types.chat.chat_completion_message",
+        "openai.types.chat.chat_completion_message_tool_call",
+        "openai.types.completion",
+    ]
+)
 
+_MOCKED_ANTHROPIC_MODULES = frozenset(
+    [
+        "anthropic",
+        "anthropic.types",
+        "anthropic.types.message",
+    ]
+)
+
+_HUGGINGFACE_HUB = "huggingface_hub"
+
+T = TypeVar("T", bound=unittest.TestCase)
+
+
+def _cleanup_mocked_modules(module_names: Iterable[str]):
+    for module in module_names:
+        if module in sys.modules:
+            del sys.modules[module]
+
+
+def safe_mocks(*context_managers):
+    """Class decorator that applies context managers to all test methods."""
+
+    def decorator(test_class: Type[T]) -> Type[T]:
+        original_run = test_class.run
+
+        def new_run(self, result=None):
+            # Create an ExitStack for managing multiple context managers.
+            with ExitStack() as stack:
+                for cm in context_managers:
+                    stack.enter_context(cm())
+                return original_run(self, result)
+
+        test_class.run = new_run
+        return test_class
+
+    return decorator
+
+
+@contextmanager
 def mock_openai_package():
     """Initialize openai package for unit tests."""
     # Create mock for the openai module and its submodules.
@@ -19,12 +71,16 @@ def mock_openai_package():
     mock_openai_types = types.ModuleType("openai.types")
     mock_openai_types_chat = types.ModuleType("openai.types.chat")
     mock_chat_completion_message = types.ModuleType("openai.types.chat.chat_completion_message")
+    mock_chat_completion_token_logprob = types.ModuleType(
+        "openai.types.chat.chat_completion_token_logprob"
+    )
     mock_chat_completion_message_tool_call = types.ModuleType(
         "openai.types.chat.chat_completion_message_tool_call"
     )
 
     mock_chat_completion_message.ChatCompletionMessage = MagicMock()
     mock_chat_completion_message.ChatCompletionMessageToolCall = MagicMock()
+    mock_chat_completion_token_logprob.ChatCompletionTokenLogprob = MagicMock()
     mock_chat_completion_message_tool_call.Function = MagicMock()
 
     mock_openai_types_completion = types.ModuleType("openai.types.completion")
@@ -35,6 +91,7 @@ def mock_openai_package():
     mock_openai.types.chat = mock_openai_types_chat
     mock_openai.types.chat.ChatCompletion = MagicMock()
     mock_openai.types.chat.chat_completion_message = mock_chat_completion_message
+    mock_openai.types.chat.chat_completion_token_logprob = mock_chat_completion_token_logprob
     mock_openai.types.chat.chat_completion_message_tool_call = (
         mock_chat_completion_message_tool_call
     )
@@ -42,15 +99,89 @@ def mock_openai_package():
     mock_openai.types.completion = mock_openai_types_completion
     mock_openai.types.completion.Completion = mock_completion
 
-    # Patch sys.modules to replace the openai package with our mock.
-    sys.modules["openai"] = mock_openai
-    sys.modules["openai.types"] = mock_openai_types
-    sys.modules["openai.types.chat"] = mock_openai_types_chat
-    sys.modules["openai.types.chat.chat_completion_message"] = mock_chat_completion_message
-    sys.modules[
-        "openai.types.chat.chat_completion_message_tool_call"
-    ] = mock_chat_completion_message_tool_call
-    sys.modules["openai.types.completion"] = mock_openai_types_completion
+    try:
+        # Patch sys.modules to replace the openai package with our mock.
+        sys.modules["openai"] = mock_openai
+        sys.modules["openai.types"] = mock_openai_types
+        sys.modules["openai.types.chat"] = mock_openai_types_chat
+        sys.modules["openai.types.chat.chat_completion_message"] = mock_chat_completion_message
+        sys.modules[
+            "openai.types.chat.chat_completion_token_logprob"
+        ] = mock_chat_completion_token_logprob
+        sys.modules[
+            "openai.types.chat.chat_completion_message_tool_call"
+        ] = mock_chat_completion_message_tool_call
+        sys.modules["openai.types.completion"] = mock_openai_types_completion
+        # Yield the main mock modudle
+        yield mock_openai
+    finally:
+        # Restore the mocked modules by deleting them from sys.modules
+        _cleanup_mocked_modules(_MOCKED_OPENAI_MODULES)
+
+
+@contextmanager
+def mock_google_genai_package():
+    """Initializes google-genai package for unit tests."""
+    # Store original google module if it exists
+    original_google = sys.modules.get("google")
+
+    # Create mock for the google.genai module and its submodules.
+    mock_genai = types.ModuleType("google.genai")
+    mock_types = types.ModuleType("google.genai.types")
+
+    # Create mocks for each class in the types submodule.
+    mock_content = MagicMock()
+    mock_part = MagicMock()
+    mock_function_declaration = MagicMock()
+    mock_tool = MagicMock()
+    mock_generate_content_config = MagicMock()
+    mock_thinking_config = MagicMock()
+    mock_client = MagicMock()
+
+    # Set up the mock module structure.
+    mock_types.Content = mock_content
+    mock_types.Part = mock_part
+    mock_types.FunctionDeclaration = mock_function_declaration
+    mock_types.Tool = mock_tool
+    mock_types.GenerateContentConfig = mock_generate_content_config
+    mock_types.ThinkingConfig = mock_thinking_config
+
+    mock_genai.types = mock_types
+    mock_genai.Client = mock_client
+
+    # Create or extend the google module to include genai
+    if original_google is not None:
+        # If google module already exists, add genai to it
+        original_google.genai = mock_genai
+        mock_google = original_google
+    else:
+        # Create a new google module with genai
+        mock_google = types.ModuleType("google")
+        mock_google.genai = mock_genai
+        sys.modules["google"] = mock_google
+
+    try:
+        # Patch sys.modules to replace the google.genai package with our mock.
+        sys.modules["google.genai"] = mock_genai
+        sys.modules["google.genai.types"] = mock_types
+        yield mock_genai
+    finally:
+        # Restore the mocked modules by deleting them from sys.modules
+        if original_google is not None:
+            # Restore original google module
+            sys.modules["google"] = original_google
+            # Remove genai attribute if we added it
+            if hasattr(original_google, "genai"):
+                delattr(original_google, "genai")
+        else:
+            # Remove the google module we created
+            if "google" in sys.modules:
+                del sys.modules["google"]
+
+        # Clean up the genai-specific modules
+        for module in ["google.genai", "google.genai.types"]:
+            if module in sys.modules:
+                del sys.modules[module]
 
 
 def mock_vertexai_package():
@@ -82,6 +213,7 @@ def mock_vertexai_package():
     sys.modules["vertexai.generative_models"] = mock_generative_models
 
 
+@contextmanager
 def mock_anthropic_package():
     """Initializes anthropic package for unit tests."""
     # Create mock for the anthropic module and its submodules.
@@ -102,16 +234,27 @@ def mock_anthropic_package():
     mock_anthropic.types = mock_anthropic_types
     mock_anthropic.types.message = mock_anthropic_message
 
-    # Patch sys.modules to replace the anthropic package with our mock.
-    sys.modules["anthropic"] = mock_anthropic
-    sys.modules["anthropic.types"] = mock_anthropic_types
-    sys.modules["anthropic.types.message"] = mock_anthropic_message
+    try:
+        # Patch sys.modules to replace the anthropic package with our mock.
+        sys.modules["anthropic"] = mock_anthropic
+        sys.modules["anthropic.types"] = mock_anthropic_types
+        sys.modules["anthropic.types.message"] = mock_anthropic_message
+        yield mock_anthropic
+    finally:
+        # Restore the mocked modules by deleting them from sys.modules
+        _cleanup_mocked_modules(_MOCKED_ANTHROPIC_MODULES)
 
 
+@contextmanager
 def mock_huggingface_hub_package():
     """Initialize huggingface hub package for unit tests."""
     # Create mock for the openai module and its submodules.
-    mock_hf_hub = types.ModuleType("huggingface_hub")
+    mock_hf_hub = types.ModuleType(_HUGGINGFACE_HUB)
     mock_hf_hub.snapshot_download = MagicMock()
     # Patch sys.modules to replace the huggingface_hub package with our mock.
-    sys.modules["huggingface_hub"] = mock_hf_hub
+    try:
+        sys.modules[_HUGGINGFACE_HUB] = mock_hf_hub
+        yield mock_hf_hub
+    finally:
+        # Restore the mocked modules by deleting them from sys.modules
+        _cleanup_mocked_modules({_HUGGINGFACE_HUB})

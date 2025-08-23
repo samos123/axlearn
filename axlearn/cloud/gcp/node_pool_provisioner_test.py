@@ -2,7 +2,6 @@
 
 """Tests node_pool_provisioner module."""
 
-import contextlib
 import io
 from datetime import datetime
 from unittest import mock
@@ -16,38 +15,60 @@ from axlearn.cloud.common.bastion import (
     serialize_jobspec,
 )
 from axlearn.cloud.common.types import JobMetadata
-from axlearn.cloud.gcp import bundler, job, node_pool_provisioner
+from axlearn.cloud.common.utils import define_flags, from_flags
+from axlearn.cloud.gcp import bundler, node_pool_provisioner
 from axlearn.cloud.gcp.bundler import ArtifactRegistryBundler
-from axlearn.cloud.gcp.job import TPUGKEJob
+from axlearn.cloud.gcp.job import GKEJob
+from axlearn.cloud.gcp.jobset_utils import TPUReplicatedJob
+from axlearn.cloud.gcp.pathways_utils import PathwaysLeaderWorkerTemplate
 from axlearn.cloud.gcp.test_utils import default_mock_settings, mock_gcp_settings
 
 
 class TPUNodePoolProvisionerTest(parameterized.TestCase):
     """Tests TPUNodePoolProvisioner."""
 
-    @property
-    def _mock_settings(self):
-        return default_mock_settings()
-
-    @contextlib.contextmanager
-    def _mock_configs(self, *, enable_tpu_smart_repair: bool = False, **kwargs):
+    def run(self, result=None):
+        # Run tests under mock user and settings.
+        self._settings = default_mock_settings()
         with mock_gcp_settings(
-            [node_pool_provisioner.__name__, job.__name__, bundler.__name__], self._mock_settings
+            [node_pool_provisioner.__name__, bundler.__name__],
+            settings=self._settings,
         ):
-            fv = flags.FlagValues()
-            TPUGKEJob.define_flags(fv)
-            fv.set_default("name", "test-job")
-            fv.set_default("instance_type", "tpu-v4-8")
-            fv.set_default("output_dir", "FAKE")
-            for key, value in kwargs.items():
-                if value is not None:
-                    setattr(fv, key, value)
-            fv.mark_as_parsed()
-            job_cfg = TPUGKEJob.from_flags(fv, command="test-command")
-            job_cfg.builder.enable_tpu_smart_repair = enable_tpu_smart_repair
-            bundler_cfg = ArtifactRegistryBundler.from_spec([], fv=fv).set(image="test-image")
-            provisioner_cfg = node_pool_provisioner.TPUNodePoolProvisioner.from_flags(fv)
-            yield job_cfg, bundler_cfg, provisioner_cfg
+            return super().run(result)
+
+    def _mock_configs(self, *, enable_tpu_smart_repair: bool = False, **kwargs):
+        fv = flags.FlagValues()
+        cfg = GKEJob.default_config().set(builder=TPUReplicatedJob.default_config())
+        define_flags(cfg, fv)
+        fv.set_default("name", "fake-name")
+        fv.set_default("instance_type", "tpu-v4-8")
+        fv.set_default("output_dir", "FAKE")
+        for key, value in kwargs.items():
+            if value is not None:
+                setattr(fv, key, value)
+        fv.mark_as_parsed()
+        cfg: GKEJob.Config = from_flags(cfg, fv, command="test-command")
+        cfg.builder.enable_tpu_smart_repair = enable_tpu_smart_repair
+        bundler_cfg = ArtifactRegistryBundler.from_spec([], fv=fv).set(image="test-image")
+        provisioner_cfg = node_pool_provisioner.TPUNodePoolProvisioner.from_flags(fv)
+        return cfg, bundler_cfg, provisioner_cfg
+
+    def _mock_configs_lws(self, *, enable_tpu_smart_repair: bool = False, **kwargs):
+        fv = flags.FlagValues()
+        cfg = GKEJob.default_config().set(builder=PathwaysLeaderWorkerTemplate.default_config())
+        define_flags(cfg, fv)
+        fv.set_default("name", "fake-name")
+        fv.set_default("instance_type", "tpu-v4-8")
+        fv.set_default("output_dir", "FAKE")
+        for key, value in kwargs.items():
+            if value is not None:
+                setattr(fv, key, value)
+        fv.mark_as_parsed()
+        cfg: GKEJob.Config = from_flags(cfg, fv, command="test-command")
+        cfg.builder.inner.enable_tpu_smart_repair = enable_tpu_smart_repair
+        bundler_cfg = ArtifactRegistryBundler.from_spec([], fv=fv).set(image="test-image")
+        provisioner_cfg = node_pool_provisioner.TPUNodePoolProvisioner.from_flags(fv)
+        return cfg, bundler_cfg, provisioner_cfg
 
     def _create_serialized_job_spec(self, job_priority):
         test_spec = new_jobspec(
@@ -90,17 +111,10 @@ class TPUNodePoolProvisionerTest(parameterized.TestCase):
             construct_node_pool_name=mock_construct_node_pool_name,
         )
 
-        with (
-            self._mock_configs(
-                num_replicas=num_replicas, enable_tpu_smart_repair=enable_tpu_smart_repair
-            ) as (
-                job_cfg,
-                bundler_cfg,
-                provisioner_cfg,
-            ),
-            mock_utils,
-            mock.patch.dict("os.environ", env),
-        ):
+        job_cfg, bundler_cfg, provisioner_cfg = self._mock_configs(
+            num_replicas=num_replicas, enable_tpu_smart_repair=enable_tpu_smart_repair
+        )
+        with mock_utils, mock.patch.dict("os.environ", env):
             tpu_gke_job = job_cfg.instantiate(bundler=bundler_cfg.instantiate())
             provisioner = provisioner_cfg.set(name="pre-provisioner-0").instantiate()
 
@@ -129,6 +143,48 @@ class TPUNodePoolProvisionerTest(parameterized.TestCase):
                     self.assertNotIn("cloud.google.com/gke-tpu-auto-restart", additional_labels)
 
     @parameterized.parameters(
+        dict(num_replicas=1, enable_tpu_smart_repair=False),
+        dict(num_replicas=2, enable_tpu_smart_repair=True),
+    )
+    def test_create_for_lws(self, num_replicas: int, enable_tpu_smart_repair: bool):
+        mock_create_node_pools = mock.Mock()
+        mock_construct_node_pool_name = mock.Mock()
+        env = {}
+
+        mock_utils = mock.patch.multiple(
+            node_pool_provisioner.__name__,
+            create_node_pools=mock_create_node_pools,
+            construct_node_pool_name=mock_construct_node_pool_name,
+        )
+
+        job_cfg, bundler_cfg, provisioner_cfg = self._mock_configs_lws(
+            num_replicas=num_replicas, enable_tpu_smart_repair=enable_tpu_smart_repair
+        )
+        with mock_utils, mock.patch.dict("os.environ", env):
+            tpu_gke_job = job_cfg.instantiate(bundler=bundler_cfg.instantiate())
+            provisioner = provisioner_cfg.set(name="pre-provisioner-0").instantiate()
+
+            provisioner.create_for(tpu_gke_job)
+
+            self.assertEqual(num_replicas, mock_construct_node_pool_name.call_count)
+            self.assertEqual(1, mock_create_node_pools.call_count)
+
+            additional_labels_list = mock_create_node_pools.call_args.kwargs[
+                "additional_labels_list"
+            ]
+            self.assertEqual(num_replicas, len(additional_labels_list))
+
+            for additional_labels in additional_labels_list:
+                self.assertNotIn("job-priority", additional_labels.keys())
+
+                if enable_tpu_smart_repair:
+                    self.assertEqual(
+                        "true", additional_labels.get("cloud.google.com/gke-tpu-auto-restart", None)
+                    )
+                else:
+                    self.assertNotIn("cloud.google.com/gke-tpu-auto-restart", additional_labels)
+
+    @parameterized.parameters(
         dict(num_replicas=1),
         dict(num_replicas=2),
     )
@@ -141,15 +197,8 @@ class TPUNodePoolProvisionerTest(parameterized.TestCase):
             delete_node_pools=mock_delete_node_pools,
             construct_node_pool_name=mock_construct_node_pool_name,
         )
-
-        with (
-            self._mock_configs(num_replicas=num_replicas) as (
-                job_cfg,
-                bundler_cfg,
-                provisioner_cfg,
-            ),
-            mock_utils,
-        ):
+        job_cfg, bundler_cfg, provisioner_cfg = self._mock_configs(num_replicas=num_replicas)
+        with mock_utils:
             tpu_gke_job = job_cfg.instantiate(bundler=bundler_cfg.instantiate())
             provisioner = provisioner_cfg.set(name="pre-provisioner-0").instantiate()
 

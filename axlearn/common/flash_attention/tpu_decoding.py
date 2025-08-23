@@ -38,12 +38,11 @@ from axlearn.common.attention_bias import (
     MaskFnAttentionBias,
     split,
 )
-from axlearn.common.flash_attention.common import (
-    BaseSingleStepDecoding,
-    build_mask,
-    query_iterator_indices,
-)
-from axlearn.common.utils import Tensor
+from axlearn.common.flash_attention.common import BaseSingleStepDecoding, get_tpu_dot_precision
+from axlearn.common.flash_attention.tpu_paged_attention_kernel import prepare_block_sparse_map
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
+from axlearn.common.kv_cache.kv_cache import KVCache
+from axlearn.common.utils import Nested, Tensor
 
 
 def _tpu_decoding_kernel(
@@ -69,9 +68,7 @@ def _tpu_decoding_kernel(
     batch_index = pl.program_id(0)
     non_empty_kv_block_index = pl.program_id(2)
     _, block_k = k_ref.shape
-    precision = (
-        lax.Precision.HIGHEST if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype) else None
-    )
+    precision = get_tpu_dot_precision(q_ref.dtype)
 
     # o is the buffer where we accumulate the output on sram.
     # m_i and l_i (see FlashAttention paper) are updated during the k,v loop.
@@ -141,13 +138,19 @@ class TPUDecoding(BaseSingleStepDecoding):
     "Wraps the TPU decoding kernel."
 
     def is_supported(
-        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
     ) -> bool:
         """See `BaseFlashAttention.is_supported`."""
-        if not super().is_supported(query=query, key=key, value=value, bias=bias):
+        if not super().is_supported(input_batch=input_batch, kv_cache_type=kv_cache_type):
             return False
 
+        if kv_cache_type != KVCache:
+            return self._log_unsupported(f"{kv_cache_type=}")
+
         block_size = self.cfg.tpu_block_size
+        key: Tensor = input_batch["key"]
         k_seq_len = key.shape[1]
         if k_seq_len % block_size != 0 and k_seq_len > block_size:
             return self._log_unsupported(f"{k_seq_len=} is not divisible by {block_size=}")
@@ -156,14 +159,10 @@ class TPUDecoding(BaseSingleStepDecoding):
     @partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        prng_key: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
-        del prng_key
+        bias: BaseAttentionBias = input_batch["bias"]
         mask, explicit_bias = split(bias, MaskFnAttentionBias)
         if mask is None or mask.target_positions is None:
             raise ValueError("Cannot retrieve MaskFnAttentionBias or target_positions.")
@@ -182,6 +181,9 @@ class TPUDecoding(BaseSingleStepDecoding):
         # Pallas TPU doesn't support pl.load(..., mask=xxx), so we kv len must divide block size.
         # However, we can reduce the block size to support the case where
         # padded_kv_seq_len < block_size.
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
         block_size = min(self.cfg.tpu_block_size, key.shape[1])
         orig_q_shape = query.shape
         q_seq_len = query.shape[1]
@@ -194,38 +196,12 @@ class TPUDecoding(BaseSingleStepDecoding):
         v = jnp.einsum("bsnh->bnhs", value)
         bs, kv_heads, head_dim, padded_kv_seq_len = k.shape
         kv_seq_len = jnp.broadcast_to(jnp.asarray(kv_seq_len), (bs,))
-        # Computes a full block map num_kv_blocks * num_kv_blocks.
-        # Use a padding to ensure padding blocks aren't counted towards `kv_block_offset_size`.
-        padding = -1
-        with jax.ensure_compile_time_eval():
-            if mask_fn is not None:
-                bool_mask = build_mask(
-                    mask_fn,
-                    q_seq_len=padded_kv_seq_len,
-                    kv_seq_len=padded_kv_seq_len,
-                    block_q=block_size,
-                    block_k=block_size,
-                )
-                offset, _ = query_iterator_indices(bool_mask, padding=padding)
-            else:
-                padded_num_kv_blocks = pl.cdiv(padded_kv_seq_len, block_size)
-                offset = lax.broadcasted_iota(
-                    jnp.int32, (padded_num_kv_blocks, padded_num_kv_blocks), 1
-                )
-
-        # Dynamically slice the rows according to the query position (which is kv_seq_len - 1).
-        kv_block_offset = offset[(kv_seq_len - 1) // block_size]
-        # Count the number of blocks with position < kv_seq_len.
-        kv_block_offset_size = jnp.count_nonzero(
-            (kv_block_offset != padding) & (kv_block_offset * block_size < kv_seq_len[:, None]),
-            axis=1,
+        kv_block_offset, kv_block_offset_size = prepare_block_sparse_map(
+            mask,
+            lengths=kv_seq_len,
+            block_size=block_size,
+            seq_len=padded_kv_seq_len,
         )
-        # Replace padding with the last valid kv block's index. See
-        # https://docs.jax.dev/en/latest/pallas/tpu/sparse.html#sparse-access-patterns-on-dense-data
-        kv_block_offset = jnp.where(
-            kv_block_offset == padding, kv_block_offset.max(axis=1, keepdims=True), kv_block_offset
-        )
-
         q = q.reshape(bs, kv_heads, -1, head_dim)
         q_seq_head = q.shape[-2]  # = q_seq_len * num_q_heads_per_kv_head
         assert q_seq_head <= 512

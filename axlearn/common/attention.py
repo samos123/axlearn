@@ -46,14 +46,16 @@ On `attention_logit_biases`:
 
 TODO(apghml) Convert everything to take an instance of BaseAttentionBias rather than a Tensor.
 
-On `live_step_len`:
-* An int tensor of shape [batch], indicating the valid step length in the given inputs.
-* We assume that live steps must be contiguous at the beginning. So once
-    `live_step_len < max_step_len` for a sequence, the remaining `max_step_len - live_step_len`
-    part is considered padding.
-* During prefill, `time_step == live_step_len`.
+On `unpadded_len`:
+* An int tensor of shape [batch], indicating the number of non-padding tokens in each sequence.
+* Non-padding tokens are assumed to be contiguous at the beginning of each sequence.
+  For a sequence with `unpadded_len[i] < sequence_length`, tokens at positions
+  `unpadded_len[i]:` are considered padding and should be ignored.
+* During prefill, `time_step == unpadded_len` since we process exactly the non-padding tokens.
+* This parameter enables optimizations in some KV cache implementations by avoiding
+  computation on padding tokens.
 
-TODO (dhwang2): Replace `time_step` argument with `live_step_len` to reduce cognitive complexity.
+TODO (dhwang2): Replace `time_step` argument with `unpadded_len` to reduce cognitive complexity.
 
 On `segment_ids`:
 * A tensor of shape [batch, target_length] with values in [0, num_segments].
@@ -76,6 +78,11 @@ On `positions`:
 * When the accompanying argument is `query`, the `positions` argument is named as
   `query_position`. Similarly, when the argument `target`, it is named as `target_positions`.
 
+On `page_pool`:
+* If not None, stores the external paged KV pool possibly shared by multiple
+  layers. Additionally, `cached_states` will not contain KV state. Instead, it will
+  contain indices used to index into `page_pool`.
+
 TODO(changlan): Merge the use of `positions` and `time_step` to reduce cognitive complexity.
 
 """
@@ -87,12 +94,11 @@ import math
 from enum import Enum, unique
 from typing import Any, Callable, NamedTuple, Optional, Protocol, Sequence, Union
 
-import chex
 import jax
 from absl import logging
 from jax import numpy as jnp
 
-from axlearn.common import ops, param_init
+from axlearn.common import param_init
 from axlearn.common.attention_bias import (
     NEG_INF,
     BaseAttentionBias,
@@ -121,6 +127,8 @@ from axlearn.common.config import (
     maybe_instantiate,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache, KVState
+from axlearn.common.kv_cache.kv_cache import KVCache as _KVCache
 from axlearn.common.layers import (
     Dropout,
     LayerNorm,
@@ -153,6 +161,7 @@ from axlearn.common.utils import (
     check_numerics,
     flatten_items,
     get_or_none,
+    maybe_shard,
     save_and_offload_only_these_names_regex,
     shapes,
     split_prng_key,
@@ -175,191 +184,10 @@ class ForwardMode(enum.Enum):
     EXTEND_STEP = 2
 
 
-class KVState(NamedTuple):
-    """Represents key/value projections.
-
-    Fields:
-        k_proj: [batch, source_length, num_kv_heads, per_head_dim], Projected key tensor.
-        v_proj: [batch, source_length, num_kv_heads, per_head_dim], Projected value tensor.
-        key_positions: [batch, source_length], Positions of the keys in the batch.
-    """
-
-    k_proj: Tensor
-    v_proj: Tensor
-    key_positions: Tensor
-
-
-class BaseKVCache(BaseLayer):
-    """Abstract base class for KV cache."""
-
-    @config_class
-    class Config(BaseLayer.Config):
-        """Configures BaseKVCache."""
-
-        # Autoregressive KV cache dtype, which the input KV is converted into.
-        # This dtype is not only used for storing the KV cache, but it also applies to
-        # the returned KV activations. Therefore, before computing attention, we need to cast
-        # the KV tensors to match the query's dtype.
-        cache_dtype: Optional[jnp.dtype] = None
-
-    class Output(KVState):
-        pass
-
-    class Shape(NamedTuple):
-        """Shape of BaseKVCache.
-
-        Fields:
-            batch_size: Batch size.
-            kv_len: KV Cache size.
-            num_kv_heads: The number of KV heads.
-            per_head_dim: The dimension per head.
-        """
-
-        batch_size: int
-        kv_len: int
-        num_kv_heads: int
-        per_head_dim: int
-
-    def _cache_dtype(self, dtype: jnp.dtype):
-        # Default to activation dtype for initialization if cache_dtype is None.
-        dtype = self.config.cache_dtype or dtype
-        assert dtype is not None
-        return dtype
-
-    def init_states(self, shape: Shape, *, dtype: jnp.dtype) -> Nested[Tensor]:
-        """Initializes KV cache.
-
-        Args:
-            shape: Shape, [batch, kv_len, num_kv_heads, per_head_dim].
-            dtype: dtype for KV Cache.
-
-        Returns:
-            init_state: A `Nested[Tensor]` object containing KV cache such as key and value.
-        """
-        raise NotImplementedError(type(self))
-
-    def extend_step(
-        self,
-        cached_states: Nested[Tensor],
-        *,
-        k_proj: Tensor,
-        v_proj: Tensor,
-        key_positions: Tensor,
-        live_step_len: Optional[Tensor] = None,
-    ) -> tuple[Nested[Tensor], Output]:
-        """Updates the KV cache per extend step.
-
-        The input k_proj/v_proj are generated by `i_proj.forward()` from the input tokens.
-        The output k_proj/v_proj will have the `kv_cache` concatenated and will be used
-        in the current attention operation.
-
-        Args:
-            cached_states: A `Nested[Tensor]` object containing KV cache such as key and value.
-            k_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
-            v_proj: A Tensor of shape [batch, step_length, num_kv_heads, per_head_dim].
-            key_positions: An optional Tensor of shape [batch, step_length].
-            live_step_len: An optional Tensor of shape [batch]. Please refer to ``On live_step_len``
-                in the file docstring for details.
-
-        Returns:
-            A tuple (updated_state, output):
-            * updated_state: A `Nested[Tensor]` object containing KV cache such as key and value.
-            * output: The output k_proj, v_proj, and key_positions, which are merged with
-                KV cache, resulting in a length of `source_length`.
-        """
-        raise NotImplementedError(type(self))
-
-
-class KVCache(BaseKVCache):
-    """Default KV cache.
-
-    Manages the kv_cache provided with max_len and updates it at each time_step.
-    """
-
-    def init_states(self, shape: BaseKVCache.Shape, *, dtype: jnp.dtype) -> Nested[Tensor]:
-        # NB: key and value in init_state are transposed so that source_length is in the last
-        # dimension as a TPU fusion optimization for one-hot matmul.
-        # Reference:
-        # https://github.com/google-research/t5x/blob/4d94d8bf41230d492e15e255c9888b5bfd9a5ee8/t5x/examples/t5/layers.
-        shape = (shape.batch_size, shape.num_kv_heads, shape.per_head_dim, shape.kv_len)
-        init_states = dict(
-            key=jnp.zeros(shape=shape, dtype=self._cache_dtype(dtype)),
-            value=jnp.zeros(shape=shape, dtype=self._cache_dtype(dtype)),
-        )
-        return init_states
-
-    def extend_step(
-        self,
-        cached_states: Nested[Tensor],
-        *,
-        k_proj: Tensor,
-        v_proj: Tensor,
-        key_positions: Tensor,
-        live_step_len: Optional[Tensor] = None,
-    ) -> tuple[Nested[Tensor], BaseKVCache.Output]:
-        # TODO(dhwang2): By returning only the valid portions of the KV (by live_step_len),
-        # the attention complexity can be reduced from O(max_len²) to O(live_step_len²), especially
-        # in prefill.
-        # The remaining part after `live_step_len` is considered padding.
-        del live_step_len
-        if k_proj.shape != v_proj.shape:
-            raise ValueError(f"{k_proj.shape=} != {v_proj.shape=}")
-        if k_proj.shape[1] != key_positions.shape[1]:
-            raise ValueError(f"{k_proj.shape[1]=} != {key_positions.shape[1]=}")
-
-        cached_key: Tensor = cached_states["key"]
-        cached_value: Tensor = cached_states["value"]
-        batch, step_size = k_proj.shape[:2]
-        # [B, T, N, H] --> [B, N, H, T].
-        k_proj = jnp.einsum("btnh->bnht", k_proj)
-        v_proj = jnp.einsum("btnh->bnht", v_proj)
-
-        # On GPU, dynamic_update_slice_in_dim becomes faster when step size ≈ 32.
-        # On TPU, dynamic_update_slice_in_dim becomes faster when step size ≈ 1024.
-        threshold = 32 if jax.default_backend() != "tpu" else 1024
-
-        # dynamic_update_slice_in_dim is typically used for updating tensors, but we found that
-        # when step_size is small, one-hot matmul is 10-20% faster on both TPU and GPU.
-        if step_size < threshold:
-            source_len = cached_key.shape[-1]
-            # Create a dispatch matrix of shape [B, T=step, S].
-            oh_indices = jax.nn.one_hot(key_positions, source_len, dtype=cached_key.dtype)
-            # Create a mask of shape [B, 1, 1, S].
-            negated_oh_indices = (1 - oh_indices.sum(axis=1))[:, None, None, :]
-
-            k_proj = jnp.einsum("b...t,bts->b...s", k_proj, oh_indices)
-            v_proj = jnp.einsum("b...t,bts->b...s", v_proj, oh_indices)
-
-            # Ensure that we accumulate using the original dtype.
-            cached_key = cached_key * negated_oh_indices + k_proj.astype(cached_key.dtype)
-            cached_value = cached_value * negated_oh_indices + v_proj.astype(cached_value.dtype)
-        else:
-            # Note: KV transpose is an optimization for one-hot matmul and is not related to
-            # dynamic_update_slice_in_dim. As a result, KV transpose only adds overhead for it.
-            # Since small step_size scenarios are more frequent, we accept slowdown in this case.
-
-            # Function to update the cache for a single batch element.
-            def update_single(cached_kv_slice, kv_proj_slice, time_idx):
-                return jax.lax.dynamic_update_slice_in_dim(
-                    cached_kv_slice, kv_proj_slice, time_idx, axis=-1
-                )
-
-            # Use jax.vmap to vectorize over the batch dimension.
-            vmap_update = jax.vmap(update_single)
-            time_step = jnp.broadcast_to(key_positions[:, 0], [batch])
-            cached_key = vmap_update(cached_key, k_proj.astype(cached_key.dtype), time_step)
-            cached_value = vmap_update(cached_value, v_proj.astype(cached_key.dtype), time_step)
-
-        updated_state = dict(key=cached_key, value=cached_value)
-        chex.assert_equal_shape((updated_state["key"], cached_key))
-        chex.assert_equal_shape((updated_state["value"], cached_value))
-        # [B, S, N, H]
-        k_proj = jnp.einsum("bnhs->bsnh", cached_key)
-        v_proj = jnp.einsum("bnhs->bsnh", cached_value)
-        # Currently, the part larger than live_step_len is also being overwritten in the KV cache,
-        # and this part is filtered out by the causal mask through key_positions.
-        key_positions = jnp.arange(k_proj.shape[1])[None]  # [1, source_length]
-        return updated_state, self.Output(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)
+# This is to prevent golden config changes for configs previously using
+# "axlearn.common.attention.KVCache".
+class KVCache(_KVCache):
+    pass
 
 
 class BaseTransformerLayer(BaseLayer):
@@ -497,6 +325,7 @@ class BaseTransformerLayer(BaseLayer):
         self_attention_logit_biases: Optional[Tensor] = None,
         cross_attention_data: Optional[Tensor] = None,
         cross_attention_logit_biases: Optional[Tensor] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[NestedTensor, Output]:
         """Computes incremental outputs.
 
@@ -515,6 +344,7 @@ class BaseTransformerLayer(BaseLayer):
             cross_attention_logit_biases: An optional Tensor of shape
                 [..., target_step_length, source_length], where `target_step_length` must match
                 the shape of `data`.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             (updated_cached_states, output), where:
@@ -719,6 +549,12 @@ class BaseMultiheadLinear(DenseGeneralBaseLayer):
 class MultiheadInputLinear(BaseMultiheadLinear):
     """Multi-head input linear layer."""
 
+    @config_class
+    class Config(BaseMultiheadLinear.Config):
+        # Explicitly define MultiheadInputLinear.Config so that config parsing
+        # functions can distinguish it from MultiheadOutputLinear.Config.
+        pass
+
     @property
     def _einsum_expr(self):
         return "btd,dnh->btnh"
@@ -741,6 +577,12 @@ class MultiheadInputLinear(BaseMultiheadLinear):
 
 class MultiheadOutputLinear(BaseMultiheadLinear):
     """Multi-head output linear layer."""
+
+    @config_class
+    class Config(BaseMultiheadLinear.Config):
+        # Explicitly define MultiheadOutputLinear.Config so that config parsing
+        # functions can distinguish it from MultiheadInputLinear.Config.
+        pass
 
     @property
     def _einsum_expr(self):
@@ -779,13 +621,21 @@ def apply_attention_logit_biases(
     return logits + attention_logit_biases.astype(logits.dtype)
 
 
-def softmax_with_biases(logits: Tensor, attention_logit_biases: Optional[Tensor] = None) -> Tensor:
+def softmax_with_biases(
+    logits: Tensor,
+    attention_logit_biases: Optional[Tensor] = None,
+    logit_sink: Optional[Tensor] = None,
+) -> Tensor:
     """Computes softmax with optional masking.
 
     Args:
         logits: A Tensor of any shape.
         attention_logit_biases: A Tensor that is broadcastable with logits.
             See ``On attention logit biases`` in the file comments.
+        logit_sink: Optional logit sink values of shape [num_heads]. When provided,
+            an additional "sink" logit is added to the QK logits to absorb excess
+            attention mass. This is applied after the logit biases, so the logit
+            biases have no effect on logit sinks.
 
     Returns:
         A Tensor of same shape and dtype as logits.
@@ -796,9 +646,29 @@ def softmax_with_biases(logits: Tensor, attention_logit_biases: Optional[Tensor]
     if logits_dtype in (jnp.bfloat16, jnp.float16):
         # Avoid computing softmax in 16-bit floats.
         logits = logits.astype(jnp.float32)
-    probs = jax.nn.softmax(logits, axis=-1)
+
+    if logit_sink is not None:
+        # Broadcast logit_sink from [num_heads] to [batch, num_heads, target_len, 1].
+        logit_sink_expanded = jnp.broadcast_to(
+            logit_sink[None, :, None, None], (*logits.shape[:-1], 1)
+        )
+        # Concatenate sink logits to the original logits
+        logits_with_sink = jnp.concatenate([logit_sink_expanded, logits], axis=-1)
+
+        # Compute softmax over logits + sink
+        probs_with_sink = jax.nn.softmax(logits_with_sink, axis=-1)
+
+        # Extract probabilities for original tokens (excluding sink)
+        probs = probs_with_sink[..., 1:]
+
+        # Note: The probabilities sum to less than 1 since some mass went to the sink.
+        # This is the intended behavior for logit sinks - they absorb excess attention mass.
+    else:
+        probs = jax.nn.softmax(logits, axis=-1)
+
     if probs.dtype != logits_dtype:
         probs = probs.astype(logits_dtype)
+
     check_numerics(probs)
     return probs
 
@@ -1291,6 +1161,155 @@ class RoFormerSinusoidalPositionalEmbedding(BaseLayer):
         )
 
 
+# Inverse dim formula to find dim based on number of rotations
+def _find_correction_dim(num_rotations, dim, theta=10000.0, max_position_embeddings=2048):
+    return (dim * math.log(max_position_embeddings / (num_rotations * 2 * math.pi))) / (
+        2 * math.log(theta)
+    )
+
+
+def _linear_ramp_mask(low, high, dim):
+    if low == high:
+        low += 0.001  # Prevent singularity
+
+    linear_func = (jnp.arange(dim, dtype=jnp.float32) - low) / (high - low)
+    ramp_func = jnp.clip(linear_func, 0, 1)
+    return ramp_func
+
+
+class YaRNSinusoidalPositionalEmbedding(RoFormerSinusoidalPositionalEmbedding):
+    """Scale RoPE with Scaling with YaRN.
+
+    Ref:
+    https://arxiv.org/pdf/2309.00071
+
+    Reference implementation:
+    Original:
+    https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaYaRNScaledRotaryEmbedding.py
+    HuggingFace:
+    https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py#L197
+    """
+
+    @config_class
+    class Config(RoFormerSinusoidalPositionalEmbedding.Config):
+        """Configures YaRNSinusoidalPositionalEmbedding."""
+
+        original_max_seq_length: Required[int] = REQUIRED
+        # Target max_seq_length = original_max_seq_length * scaling_factor.
+        scaling_factor: float = 1.0
+        beta_slow: float = 1.0
+        beta_fast: float = 32.0
+        extrapolation_factor: float = 1.0
+        # TODO(kelvinzou): HuggingFace has slightly different behavior for attn_factor.
+        # We may consider adding them to the config and fully match the HuggingFace implementation
+        # over the original implementation in the future. Currently it is always set to 1.0.
+        attn_factor: float = 1.0
+
+    def compute_rope_params(self):
+        """Generates the inverse frequencies and scaling factors for the YaRN RoPE.
+
+        Args:
+            dim (int): The dimensionality of the positional embedding.
+            theta (float, optional): A parameter to scale the frequency. Defaults to 10000.0.
+            scaling_factor (float, optional): A factor to scale the interpolation frequencies.
+                It should be the same as target_max_seq_length/source_max_seq_length.
+            beta_slow (float, optional): A factor to control the slow rotation. Defaults to 1.0.
+            beta_fast (float, optional): A factor to control the fast rotation. Defaults to 32.0.
+            original_max_seq_length (int, optional): The original maximum sequence length.
+                Defaults to 2048.
+            extrapolation_factor (float, optional): A factor to control the extrapolation.
+                Defaults to 1.0.
+            attn_factor (float, optional): A factor to control the attention. Defaults to 1.0.
+
+        Returns:
+            Tuple[Tensor, float]: The inverse frequencies and scaling factors for the YaRN RoPE.
+        """
+        cfg: YaRNSinusoidalPositionalEmbedding.Config = self.config
+        dim = cfg.dim
+        theta = cfg.theta
+        dim_array = jnp.arange(dim // 2).astype(jnp.float32)
+        pos_freqs = jnp.power(theta, 2 * dim_array / dim)
+        inv_freq_extrapolation = 1.0 / pos_freqs
+        inv_freq_interpolation = 1.0 / (cfg.scaling_factor * pos_freqs)
+        # Find dim range bounds based on rotations, and clip values just in case.
+        low = max(
+            0,
+            math.floor(
+                _find_correction_dim(cfg.beta_fast, dim, theta, cfg.original_max_seq_length)
+            ),
+        )
+        high = min(
+            dim - 1,
+            math.ceil(_find_correction_dim(cfg.beta_slow, dim, theta, cfg.original_max_seq_length)),
+        )
+        ramp_func = _linear_ramp_mask(low, high, dim // 2).astype(jnp.float32)
+        # Get n-d rotational scaling corrected for extrapolation
+        inv_freq_mask = (1 - ramp_func) * cfg.extrapolation_factor
+        inv_freq = (
+            inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
+        )
+        # Get n-d magnitude scaling corrected for interpolation
+        mscale = (0.1 * math.log(max(1.0, cfg.scaling_factor)) + 1.0) * cfg.attn_factor
+        return inv_freq, mscale
+
+    def build_rotary_sinusoidal_positional_embeddings(
+        self, positions: Tensor, inv_freq: Tensor, mscale: float
+    ) -> Tensor:
+        """Generate the sin/cos positional embedding from prebuilt inverse frequencies.
+
+        Args:
+            positions: A tensor representing the token positions with shape [batch_size, seq_len].
+            inv_freq: A tensor of inverse frequencies with shape [dim // 2].
+            mscale: A scaling factor for the positional embeddings.
+        Returns:
+            Rotary Positional Embedding with shape [batch_size, seq_len, dim].
+        """
+        pos_array = positions.astype(jnp.float32)  # [batch_size, seq_len]
+        position_enc = pos_array[:, :, None] * inv_freq[None, None, :]
+        rope_part_1 = jnp.sin(position_enc) * mscale
+        rope_part_2 = jnp.cos(position_enc) * mscale
+        rope = jnp.concatenate((rope_part_1, rope_part_2), axis=-1)
+        return rope
+
+    def forward(
+        self, *, positions: Optional[Tensor] = None, max_seq_len: Optional[int] = None
+    ) -> Tensor:
+        """
+        Computes the rotary sinusoidal positional embeddings with YaRN.
+
+        Args:
+            positions: A tensor representing the token position IDs.
+                The shape is [batch_size, seq_len].
+            max_seq_len: Max length of sequence, required if positions is not provided,
+                ignored if positions is provided.
+
+        Returns:
+            Rotary Positional Embedding. Shape is [seq_len, dim].
+
+        Raises:
+            ValueError: If positions is None and max_seq_len is None, or they both exist
+                but do not match.
+        """
+        ivf, mscale = self.compute_rope_params()
+
+        if positions is not None and max_seq_len is not None:
+            if max_seq_len != positions.shape[-1]:
+                raise ValueError(
+                    "Both `positions` and `max_seq_len` are provided and they "
+                    "do not match. You only need to provide one of them."
+                )
+        if positions is None:
+            if max_seq_len is None:
+                raise ValueError(
+                    "Must provide `max_seq_len` for computing default query positions if "
+                    "`positions` is None."
+                )
+            positions = self.default_query_positions(max_seq_len)
+        return self.build_rotary_sinusoidal_positional_embeddings(
+            positions=positions, inv_freq=ivf, mscale=mscale
+        )
+
+
 def apply_rotary_position_embeddings(
     *,
     query: Tensor,
@@ -1499,15 +1518,17 @@ class BaseScaleQK(BaseLayer):
         # The per-head dimension.
         per_head_dim: Required[int] = REQUIRED
 
-    def forward(self, proj: Tensor) -> Tensor:
+    def forward(self, proj: Tensor, *, positions: Optional[Tensor]) -> Tensor:
         """Scales the projected queries or keys.
 
         Args:
             proj: The projected queries/keys.
                 Shape: [batch, seq_length, num_heads, per_head_dim].
+            positions: Optional positions of queries/keys.
+                Shape: [batch, seq_length].
 
         Returns:
-            A tensor with the same shape as the input.
+            A tensor with the same shape as `proj`.
         """
         raise NotImplementedError(type(self))
 
@@ -1559,14 +1580,12 @@ class ScaleQuery(BaseScaleQK):
         scale = self._scale_factor(self.config.per_head_dim)
         return proj * scale
 
-    def forward(self, proj: Tensor) -> Tensor:
+    def forward(self, proj: Tensor, *, positions: Optional[Tensor]) -> Tensor:
         """Scales the projected queries."""
+        del positions
         proj = self.apply_norm(proj)
         proj = self.apply_per_dim_scale(proj)
-        proj = self.apply_scale_factor(proj)
-        # Stop scale constant from being folded with others.
-        # May increase numerical stability.
-        return ops.forward_optimization_barrier(proj)
+        return self.apply_scale_factor(proj)
 
     @staticmethod
     def default_scale_factor_config() -> InstantiableConfig[ScaleFn]:
@@ -1599,16 +1618,14 @@ class ScaleKey(BaseScaleQK):
         if cfg.norm is not None:
             self._add_child("norm", cfg.norm.set(input_dim=cfg.per_head_dim))
 
-    def forward(self, proj: Tensor) -> Tensor:
+    def forward(self, proj: Tensor, *, positions: Optional[Tensor]) -> Tensor:
         """Scales the projected keys."""
+        del positions
         cfg = self.config
         if cfg.norm is not None:
             proj = self.norm(proj)
         scale = self._scale_factor(cfg.per_head_dim)
-        proj = proj * scale
-        # Stop scale constant from being folded with others.
-        # May increase numerical stability.
-        return ops.forward_optimization_barrier(proj)
+        return proj * scale
 
     @staticmethod
     def default_scale_factor_config() -> InstantiableConfig[ScaleFn]:
@@ -1656,21 +1673,59 @@ class MultiheadAttention(BaseLayer):
         # code paths may be used. (See the FlashAttention docstring for more details.)
         # This field may not be specified if `causal` (deprecated) is specified.
         # If `attention_logit_biases` argument is also specified, both masks are combined with AND.
+        # TODO (apghml) Remove this field and have AttentionLogitBiasLayer return an AttentionBias.
         mask: Optional[ClassConfigBase[MaskFnAttentionBias]] = None
         # Deprecated. Use `mask=CausalAttentionBias.default_config()` instead.
         # If True, applies causal masking. `key` and `value` must be None.
         # May not be specified if `mask` is already specified.
         # If `attention_logit_biases` argument is also specified, both masks are combined with AND.
-        # TODO (apghml) Eliminate this field in favor of `mask`.
+        # TODO (apghml) Remove this field and have AttentionLogitBiasLayer return an AttentionBias.
         causal: Optional[bool] = None
         # Determines KV cache's behavior, such as standard, sliding window, sparse KV cache, etc.
         # If None, uses KVCache.default_config().
         kv_cache: Optional[BaseKVCache.Config] = None
 
+        # Sets whether key and value should be scaled before `extend_step` or after.
+        # If False or None, the following code sequence will apply.
+        # ```python
+        # q, k, v = i_proj(...)
+        # k, v = kv_cache.extend_step(k, v)
+        # k, v = scale_kv(k, v)
+        # ```
+        #
+        # If True, the following code sequence will apply.
+        # ```python
+        # q, k, v = i_proj(...)
+        # k, v = scale_kv(k, v)
+        # k, v = kv_cache.extend_step(k, v)
+        # ```
+        #
+        # Generally, scaling k and v before storing them into the KV cache (i.e. extend_step) leads
+        # to better inference performance. However, this might be incompatible to some KV sharing
+        # architectures that have different scaling factors for KV-shared layers.
+        scale_kv_before_cache_update: Optional[bool] = None
+
+        # If true, use learnable logit sinks.
+        logit_sink: Optional[bool] = None
+
+        # Partition spec for query ([batch, seq, q_heads, head_dim]) after input projections.
+        q_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
+
+        # Partition spec for key ([batch, seq, kv_heads, head_dim]) after input projections.
+        # Follows `q_partition_spec` if None.
+        k_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
+
+        # Partition spec for value ([batch, seq, kv_heads, head_dim]) after input projections.
+        # Follows `q_partition_spec` if None.
+        v_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
+
+        # Partition spec for output ([batch, seq, hidden_dim]) after output projections.
+        o_partition_spec: Optional[Sequence[Union[str, Sequence[str], None]]] = None
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        if cfg.causal and cfg.mask is not None:
+        if cfg.causal is not None and cfg.mask is not None:
             raise NotImplementedError("Cannot specify `causal` when using `mask`.")
         if cfg.causal:
             self._mask_tpl = CausalAttentionBias.default_config()
@@ -1713,6 +1768,20 @@ class MultiheadAttention(BaseLayer):
         kv_cache = cfg.kv_cache or KVCache.default_config()
         self._add_child("kv_cache", kv_cache)
 
+    def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
+        cfg = self.config
+        params = {}
+        if cfg.logit_sink:
+            initializer = ConstantInitializer.default_config().set(value=0.0).instantiate()
+            params["sink"] = ParameterSpec(
+                shape=(cfg.num_heads,),
+                mesh_axes=("model",),
+                initializer=initializer,
+                dtype=cfg.dtype,
+                weight_decay_scale=0.0,
+            )
+        return params
+
     def output_dim(self):
         cfg = self.config
         return cfg.output_dim or cfg.query_dim
@@ -1751,12 +1820,13 @@ class MultiheadAttention(BaseLayer):
         key: Optional[Tensor] = None,
         value: Optional[Tensor] = None,
         kv_state: Optional[KVState] = None,
-        live_step_len: Optional[Tensor] = None,
+        unpadded_len: Optional[Tensor] = None,
         attention_logit_biases: Union[None, Tensor, BaseAttentionBias] = None,
         segment_ids: Optional[Tensor] = None,
         query_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], Optional[Output]]:
         """Computes attention for the given query, key, value, and attention logit biases.
 
@@ -1769,13 +1839,14 @@ class MultiheadAttention(BaseLayer):
             key:   An optional Tensor of shape [batch, source_length, source_dim].
             value: An optional Tensor of shape [batch, source_length, source_dim].
             kv_state: An optional KVState. If specified, both `key` and `value` should be None.
-            live_step_len: An optional Tensor of shape [batch]. Please refer to ``On live_step_len``
+            unpadded_len: An optional Tensor of shape [batch]. Please refer to ``On unpadded_len``
                 in the file docstring for details.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
             segment_ids: See ``On segment_ids`` in the file comments.
             query_positions: See ``On positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on `Output`.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             A tuple (cached_states, output):
@@ -1788,13 +1859,14 @@ class MultiheadAttention(BaseLayer):
             ValueError: If key & value are an invalid combination.
             ValueError: If `mode` is unsupported.
         """
+        cfg: MultiheadAttention.Config = self.config
+        has_external_kv_state = kv_state is not None
         # Validate key & value combination.
         if (key is None) != (value is None):
             raise ValueError(
                 f"key and value must be both None or both set, key:{type(key)}, value:{type(value)}"
             )
-        if kv_state is not None:
-            # KV cache sharing branch.
+        if has_external_kv_state:  # KV cache sharing branch.
             if key is not None or value is not None:
                 raise ValueError("kv_state should not be specified together with key/value")
             # Note: self.i_proj must be QLinear, and KVCache must be no-op.
@@ -1813,16 +1885,40 @@ class MultiheadAttention(BaseLayer):
             time_step = cached_states["time_step"]
             query_positions = query_positions + time_step[:, None]  # [batch, steps]
         q_proj, k_proj, v_proj = self.i_proj(query, query_positions=query_positions, **kv_kwargs)
+        q_proj = maybe_shard(q_proj, cfg.q_partition_spec)
+        k_proj = maybe_shard(k_proj, cfg.k_partition_spec or cfg.q_partition_spec)
+        v_proj = maybe_shard(v_proj, cfg.v_partition_spec or cfg.q_partition_spec)
+
+        if cfg.scale_kv_before_cache_update:
+            if has_external_kv_state:
+                # TODO(hanzhi-zhou): Relax this restriction. Some KV sharing models support this if
+                # KV-shared layers don't have their own KV normalization layers.
+                raise ValueError(
+                    "KV sharing (e.g. when kv_state is not None) is not supported if "
+                    "scale_kv_before_cache_update=True."
+                )
+            q_proj = self._remat_name(q_proj, "q_proj")
+            k_proj = self._remat_name(k_proj, "k_proj")
+            v_proj = self._remat_name(v_proj, "v_proj")
+
+            # Scale query and key.
+            q_proj, k_proj = self._scale_qk(
+                q_proj=q_proj,
+                k_proj=k_proj,
+                query_positions=query_positions,
+                key_positions=query_positions,
+            )
 
         if mode == ForwardMode.FORWARD:
             new_cached_states = dict()
-            key_positions = jnp.arange(k_proj.shape[1])[None]
-            kv_state = KVState(k_proj=k_proj, v_proj=v_proj, key_positions=key_positions)
+            kv_state = KVState(
+                k_proj=k_proj, v_proj=v_proj, key_positions=jnp.arange(k_proj.shape[1])[None]
+            )
         elif mode in (ForwardMode.EXTEND_STEP, ForwardMode.INIT_STATES):
             assert cached_states is not None
-            step_len = live_step_len if live_step_len is not None else q_proj.shape[1]
+            step_len = unpadded_len if unpadded_len is not None else q_proj.shape[1]
             new_cached_states = dict(time_step=time_step + step_len)
-            if kv_state is None:
+            if not has_external_kv_state:
                 # In prefill, init_states already called self.kv_cache.init_states.
                 with child_context("kv_cache_extend_step", module=self.kv_cache):
                     new_cached_states["kv_cache"], kv_cache_output = self.kv_cache.extend_step(
@@ -1830,27 +1926,52 @@ class MultiheadAttention(BaseLayer):
                         k_proj=k_proj,
                         v_proj=v_proj,
                         key_positions=query_positions,
-                        live_step_len=live_step_len,
+                        unpadded_len=unpadded_len,
+                        page_pool=page_pool,
                     )
-                k_proj, v_proj, key_positions = kv_cache_output
-                kv_state = KVState(*kv_cache_output)
+                if mode == ForwardMode.EXTEND_STEP:
+                    kv_state = KVState(*kv_cache_output)
+                else:
+                    # During prefill, q/k/v_proj are the same as in the forward pass.
+                    # kv_cache.extend_step() was called to update the kv_cache.
+                    assert mode == ForwardMode.INIT_STATES
+                    key_positions = query_positions
+                    kv_state = KVState(k_proj, v_proj, key_positions)
             else:
                 # KV sharing branch.
-                k_proj, v_proj, key_positions = kv_state
-                kv_state = KVState(*kv_state)
+                #
+                # When we call `i_proj` above, we already pass `kv_state` to it,
+                # so that i_proj will use shared KV and update it.
+                #
+                # Here we pack the `k_proj` and `v_proj` (possibly updated by i_proj),
+                # leaving other fields unchanged.
+                kv_state = kv_state._replace(k_proj=k_proj, v_proj=v_proj)
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
 
-        q_proj = self._remat_name(q_proj, "q_proj")
-        k_proj = self._remat_name(k_proj, "k_proj")
-        v_proj = self._remat_name(v_proj, "v_proj")
+        if not cfg.scale_kv_before_cache_update:
+            q_proj = self._remat_name(q_proj, "q_proj")
+            k_proj = self._remat_name(kv_state.k_proj, "k_proj")
+            # Scale query and key.
+            q_proj, scaled_k_proj = self._scale_qk(
+                q_proj=q_proj,
+                k_proj=k_proj,
+                query_positions=query_positions,
+                key_positions=kv_state.key_positions,
+            )
+            kv_state = kv_state._replace(
+                k_proj=scaled_k_proj, v_proj=self._remat_name(kv_state.v_proj, "v_proj")
+            )
+
         self.vlog(3, "atten.q_proj=%s", q_proj.sum())
-        self.vlog(3, "atten.k_proj=%s", k_proj.sum())
-        self.vlog(3, "atten.v_proj=%s", v_proj.sum())
+        self.vlog(3, "atten.k_proj=%s", kv_state.k_proj.sum())
+        self.vlog(3, "atten.v_proj=%s", kv_state.v_proj.sum())
         attention_logit_biases = as_attention_bias(attention_logit_biases)
         if self._mask_tpl is not None:
             attention_logit_biases += self._mask_tpl.instantiate(
-                target_positions=query_positions, source_positions=key_positions, dtype=q_proj.dtype
+                target_positions=query_positions,
+                source_positions=kv_state.key_positions,
+                dtype=q_proj.dtype,
             )
         if segment_ids is not None:
             assert mode == ForwardMode.FORWARD, "segment_ids must be None in inference."
@@ -1858,15 +1979,18 @@ class MultiheadAttention(BaseLayer):
         context, probs = self._compute_attention(
             mode=mode,
             q_proj=q_proj,
-            k_proj=k_proj,
-            v_proj=v_proj,
+            kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
         )
+        if not cfg.scale_kv_before_cache_update:
+            # This is to maintain the existing behavior of sending pre-scaled K to the next layer.
+            kv_state = kv_state._replace(k_proj=k_proj)
         self.vlog(3, "atten.prob=%s", probs[0, 0, 0, :])
         self.vlog(3, "atten.context=%s", context.sum())
 
         # [batch, target_length, output_dim].
         o_proj = self.o_proj(context)
+        o_proj = maybe_shard(o_proj, cfg.o_partition_spec)
         outputs = self._remat_name(o_proj, "o_proj")
         self._add_tensor_stats("o_proj_outputs", outputs)
         return_aux = return_aux or set()
@@ -1877,13 +2001,24 @@ class MultiheadAttention(BaseLayer):
         )
         return new_cached_states, output
 
+    def _scale_qk(
+        self,
+        *,
+        q_proj: Tensor,
+        k_proj: Tensor,
+        query_positions: Tensor,
+        key_positions: Tensor,
+    ):
+        q_proj = self.scale_query(q_proj, positions=query_positions)
+        k_proj = self.scale_key(k_proj, positions=key_positions)
+        return q_proj, k_proj
+
     def _compute_attention(
         self,
         *,
         mode: ForwardMode,
         q_proj: Tensor,
-        k_proj: Tensor,
-        v_proj: Tensor,
+        kv_state: KVState,
         attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
         """Computes attention context and probs.
@@ -1892,8 +2027,8 @@ class MultiheadAttention(BaseLayer):
             mode: Configures whether `cached_states` are consumed or emitted. See `ForwardMode` for
                 details.
             q_proj: [batch_size, target_length, num_heads, per_head_dim].
-            k_proj: [batch_size, source_length, num_heads, per_head_dim].
-            v_proj: [batch_size, source_length, num_heads, per_head_dim].
+            kv_state: The KV State dataclass containing k_proj, v_proj, key_positions, and optional
+                attributes such as page_indices.
             attention_logit_biases: See ``On attention logit biases`` in the file comments.
 
         Returns:
@@ -1901,12 +2036,20 @@ class MultiheadAttention(BaseLayer):
             and probs of shape [batch, num_heads, target_length, source_length].
         """
         del mode
+        # Not all subclasses have kv_cache.
+        if hasattr(self, "kv_cache"):
+            k_proj, v_proj = self.kv_cache.maybe_normalize_kv(kv_state)
+        else:
+            k_proj, v_proj = kv_state.k_proj, kv_state.v_proj
         # KV cache may cast them in lower precision.
         k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)
         logits = self._compute_logits(q_proj, k_proj)
         logits = self._cap_logits(logits)
         self.vlog(3, "atten.logits=%s", logits[0, 0, 0, :])
-        probs = softmax_with_biases(logits, attention_logit_biases=attention_logit_biases.value())
+        logit_sink = self.parameters.get("sink", None)
+        probs = softmax_with_biases(
+            logits, attention_logit_biases=attention_logit_biases.value(), logit_sink=logit_sink
+        )
         probs = self.dropout(probs)
         context = self._compute_context(probs, v_proj)
         context = self._remat_name(context, "context")
@@ -1976,8 +2119,6 @@ class MultiheadAttention(BaseLayer):
         Returns:
             logits: [batch, num_heads, target_length, source_length].
         """
-        q_proj = self.scale_query(q_proj)
-        k_proj = self.scale_key(k_proj)
         return jnp.einsum("btnh,bsnh->bnts", q_proj, k_proj)
 
     def _compute_context(self, probs: Tensor, v_proj: Tensor) -> Tensor:
@@ -2063,7 +2204,7 @@ class MultiheadAttention(BaseLayer):
             query=query,
             key=key,
             value=value,
-            live_step_len=time_step,
+            unpadded_len=time_step,
             cached_states=init_states,
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
@@ -2081,6 +2222,7 @@ class MultiheadAttention(BaseLayer):
         kv_state: Optional[KVState] = None,
         attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[NestedTensor, Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -2107,6 +2249,7 @@ class MultiheadAttention(BaseLayer):
                 The biases should already include causal masking for decoding, plus other biases
                 if necessary.
             return_aux: See comments on `Output`.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -2122,6 +2265,7 @@ class MultiheadAttention(BaseLayer):
             kv_state=kv_state,
             attention_logit_biases=attention_logit_biases,
             return_aux=return_aux,
+            page_pool=page_pool,
         )
 
     @staticmethod
@@ -2229,7 +2373,7 @@ class GroupedQueryAttention(MultiheadAttention):
         if num_head_group == 1:
             return super()._compute_logits(q_proj=q_proj, k_proj=k_proj)
 
-        return compute_gqa_logits(self.scale_query(q_proj), self.scale_key(k_proj))
+        return compute_gqa_logits(q_proj, k_proj)
 
     def _compute_context(self, probs: Tensor, v_proj: Tensor) -> Tensor:
         """Compute attention context.
@@ -2269,12 +2413,12 @@ class SigmoidAttention(MultiheadAttention):
         *,
         mode: ForwardMode,
         q_proj: Tensor,
-        k_proj: Tensor,
-        v_proj: Tensor,
+        kv_state: KVState,
         attention_logit_biases: BaseAttentionBias,
     ) -> tuple[Tensor, Tensor]:
         """See `MultiheadAttention._compute_attention` for details."""
         del mode
+        k_proj, v_proj = self.kv_cache.maybe_normalize_kv(kv_state)
         cfg = self.config
         # KV cache may cast them in lower precision.
         k_proj, v_proj = k_proj.astype(q_proj.dtype), v_proj.astype(q_proj.dtype)
@@ -2501,8 +2645,16 @@ class MultiheadAttentionXL(MultiheadAttention):
             raise ValueError("Both key and value must be None for MultiheadAttentionXL")
         return super().forward(query, **kwargs)
 
-    def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
+    def _scale_qk(
+        self,
+        *,
+        q_proj: Tensor,
+        k_proj: Tensor,
+        query_positions: Tensor,
+        key_positions: Tensor,
+    ):
         cfg = self.config
+        del query_positions
         with child_context("apply_query_norm", module=self):
             # We apply the query norm (if configured) to the projection (not the logits).
             q_proj = self.scale_query.apply_norm(q_proj)
@@ -2514,6 +2666,13 @@ class MultiheadAttentionXL(MultiheadAttention):
             with child_context("apply_scale_factor_queries", module=self):
                 q_proj = self.scale_query.apply_scale_factor(q_proj)
 
+        # Apply key scaling.
+        k_proj = self.scale_key(k_proj, positions=key_positions)
+        return q_proj, k_proj
+
+    def _compute_logits(self, q_proj: Tensor, k_proj: Tensor) -> Tensor:
+        cfg = self.config
+
         seq_len = q_proj.shape[1]
         # [2*seq_len - 1, pos_emb_dim].
         #
@@ -2524,9 +2683,6 @@ class MultiheadAttentionXL(MultiheadAttention):
         pos_emb = self.relative_pos_emb(jnp.arange(seq_len - 1, -seq_len, -1, dtype=jnp.int32))
         # [2*seq_len - 1, num_heads, per_head_dim].
         r_proj = self.r_proj(pos_emb)
-
-        # Apply key scaling.
-        k_proj = self.scale_key(k_proj)
 
         logits = xl_attention_logits(
             q_proj=q_proj,
@@ -2552,6 +2708,29 @@ class MultiheadAttentionXL(MultiheadAttention):
         raise NotImplementedError(type(self))
 
 
+class NormPosition(enum.Enum):
+    """NormPosition is used for structure=v2 to indicate the positions of
+    the normalization layers for TransformerAttentionLayer,
+    TransformerFeedForwardLayer and TransformerFeedForwardMoE.
+
+    Given structure=v2, the norm must be a dict[NormPosition, InstantiableConfig],
+    where the entries represent the normalization layer configs to use in
+      `y = out_norm(x + res_norm(fn(in_norm(x))))`,
+    and any absent key represent the identity function.
+
+    Examples:
+    `norm={NormPosition.IN_NORM:LayerNorm.default_config()}` is equivalent to "prenorm";
+    `norm={NormPosition.OUT_NORM:LayerNorm.default_config()}` is equivalent to "postnorm";
+    `norm={NormPosition.IN_NORM:LayerNorm.default_config(),
+           NormPosition.RES_NORM:LayerNorm.default_config()}` represents "hybridnorm"
+          (aka, peri-LN in https://arxiv.org/abs/2502.02732);
+    """
+
+    IN_NORM = "in_norm"
+    RES_NORM = "res_norm"
+    OUT_NORM = "out_norm"
+
+
 class TransformerAttentionLayer(BaseLayer):
     """A Transformer attention layer with normalization and a skip connection.
 
@@ -2564,7 +2743,10 @@ class TransformerAttentionLayer(BaseLayer):
 
         target_dim: Required[int] = REQUIRED  # Input target feature dim.
         source_dim: Required[int] = REQUIRED  # Input source feature dim.
-        norm: InstantiableConfig = LayerNorm.default_config()  # The normalization layer config.
+        # The normalization layer config.
+        norm: Union[
+            InstantiableConfig, dict[NormPosition, InstantiableConfig]
+        ] = LayerNorm.default_config()
         attention: InstantiableConfig = (
             MultiheadAttention.default_config()
         )  # The attention layer config.
@@ -2581,18 +2763,28 @@ class TransformerAttentionLayer(BaseLayer):
         # hybridnorm: TransformerAttentionLayer(x) = x + layernorm_2(attention(layernorm_1(x)))
         # Ref: https://github.com/google/praxis/blob/main/praxis/layers/transformers.py#L1129
         # TODO (bwzhang@) Adding a unittest for the hybridnorm.
+        # v2: see comments on NormPosition for details.
         structure: str = "prenorm"
 
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg = self.config
-        if cfg.structure in ["prenorm", "postnorm"]:
-            self._add_child("norm", cfg.norm.set(input_dim=cfg.target_dim))
-        elif cfg.structure == "hybridnorm":
-            self._add_child("prenorm", cfg.norm.set(input_dim=cfg.target_dim))
-            self._add_child("postnorm", cfg.norm.set(input_dim=cfg.target_dim))
+        if cfg.structure == "v2":
+            if not isinstance(cfg.norm, dict):
+                raise ValueError(f"When structure=v2, cfg.norm must be a dict: {cfg.norm}")
+            for position, norm in cfg.norm.items():
+                self._add_child(position.value, norm.set(input_dim=cfg.target_dim))
         else:
-            raise NotImplementedError(cfg.structure)
+            if not isinstance(cfg.norm, InstantiableConfig):
+                raise ValueError("When structure != v2, cfg.norm must be a config.")
+            if cfg.structure in ["prenorm", "postnorm"]:
+                self._add_child("norm", cfg.norm.set(input_dim=cfg.target_dim))
+            elif cfg.structure == "hybridnorm":
+                self._add_child("prenorm", cfg.norm.set(input_dim=cfg.target_dim))
+                self._add_child("postnorm", cfg.norm.set(input_dim=cfg.target_dim))
+            else:
+                raise NotImplementedError(cfg.structure)
+
         self._add_child(
             "attention",
             cfg.attention.set(
@@ -2631,6 +2823,7 @@ class TransformerAttentionLayer(BaseLayer):
         target_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Optional[Nested[Tensor]], Optional[Output]]:
         """Computes either self-attention or cross-attention for the given target and source.
 
@@ -2645,6 +2838,7 @@ class TransformerAttentionLayer(BaseLayer):
             target_positions: See ``On positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on `Output`.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             A tuple (cached_states, output):
@@ -2700,6 +2894,7 @@ class TransformerAttentionLayer(BaseLayer):
                     target,
                     **kv_kwargs,
                     attention_logit_biases=attention_logit_biases,
+                    page_pool=page_pool,
                 )
             else:
                 raise ValueError(f"Unrecognized mode {mode}.")
@@ -2728,6 +2923,13 @@ class TransformerAttentionLayer(BaseLayer):
             data = skip_input + self.stochastic_depth(
                 self.dropout(self.postnorm(atten_output.data))
             )
+        elif cfg.structure == "v2":
+            norm_target = self.in_norm(target) if NormPosition.IN_NORM in cfg.norm else target
+            atten_state, atten_output = attention_thunk(norm_target)
+            data = atten_output.data
+            data = self.res_norm(data) if NormPosition.RES_NORM in cfg.norm else data
+            data = target + self.stochastic_depth(self.dropout(data))
+            data = self.out_norm(data) if NormPosition.OUT_NORM in cfg.norm else data
         else:
             raise NotImplementedError(cfg.structure)
         return dict(attention=atten_state), self.Output(
@@ -2825,6 +3027,7 @@ class TransformerAttentionLayer(BaseLayer):
         source: Optional[Union[Tensor, KVState]] = None,
         attention_logit_biases: Optional[Tensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Nested[Tensor], Output]:
         """Computes the value vector given the query of the current step.
         This function is used by autoregressive decoding.
@@ -2842,6 +3045,7 @@ class TransformerAttentionLayer(BaseLayer):
                 attention_logit_biases should have already taken care of causal masking for
                 decoding, plus other maskings necessary.
             return_aux: See comments on `Output`.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             A `NestedTensor` state of key and value pair along with index updated at `time_step`.
@@ -2858,6 +3062,7 @@ class TransformerAttentionLayer(BaseLayer):
             cached_states=cached_states,
             attention_logit_biases=attention_logit_biases,
             return_aux=return_aux,
+            page_pool=page_pool,
         )
 
 
@@ -2888,8 +3093,10 @@ class TransformerFeedForwardLayer(BaseLayer):
         linear2: InstantiableConfig = Linear.default_config().set(
             param_partition_spec=["model", None]
         )
-        norm: InstantiableConfig = LayerNorm.default_config()  # The normalization layer config.
-
+        # The normalization layer config.
+        norm: Union[
+            InstantiableConfig, dict[NormPosition, InstantiableConfig]
+        ] = LayerNorm.default_config()
         # The activation function(s).
         #
         # If a single string, the activation applied on the output of linear1.
@@ -2912,11 +3119,12 @@ class TransformerFeedForwardLayer(BaseLayer):
         # https://github.com/tensorflow/models/blob/master/official/projects/vit/modeling/nn_blocks.py#L103-L119
         stochastic_depth: InstantiableConfig = StochasticDepth.default_config()
 
-        # The inner structure of the layer: "prenorm", "postnorm", "hybridnorm", "nonorm".
+        # The inner structure of the layer: "prenorm", "postnorm", "hybridnorm", "nonorm", "v2".
         # * prenorm: y = x + feedforward(norm(x))
         # * postnorm: y = norm(x + feedforward(x))
-        # * hybridnorm: y = postnorm(x + feedforward(prenorm(x)))
+        # * hybridnorm: y = x + postnorm(feedforward(prenorm(x)))
         # * nonorm: y = feedforward(x)   # no residual, which is usually applied externally.
+        # * v2: see comments NormPosition for details.
         #
         # References:
         # prenorm/postnorm: https://arxiv.org/abs/2002.04745.
@@ -2948,15 +3156,23 @@ class TransformerFeedForwardLayer(BaseLayer):
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg: TransformerFeedForwardLayer.Config = self.config
-        if cfg.structure in ["prenorm", "postnorm"]:
-            self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
-        elif cfg.structure == "hybridnorm":
-            self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
-            self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
-        elif cfg.structure == "nonorm":
-            pass
+        if cfg.structure == "v2":
+            if not isinstance(cfg.norm, dict):
+                raise ValueError(f"When structure=v2, cfg.norm must be a dict: {cfg.norm}")
+            for position, norm in cfg.norm.items():
+                self._add_child(position.value, norm.set(input_dim=cfg.input_dim))
         else:
-            raise NotImplementedError(cfg.structure)
+            if not isinstance(cfg.norm, InstantiableConfig):
+                raise ValueError("When structure != v2, cfg.norm must be a config.")
+            if cfg.structure in ["prenorm", "postnorm"]:
+                self._add_child("norm", cfg.norm.set(input_dim=cfg.input_dim))
+            elif cfg.structure == "hybridnorm":
+                self._add_child("prenorm", cfg.norm.set(input_dim=cfg.input_dim))
+                self._add_child("postnorm", cfg.norm.set(input_dim=cfg.input_dim))
+            elif cfg.structure == "nonorm":
+                pass
+            else:
+                raise NotImplementedError(cfg.structure)
 
         if isinstance(cfg.hidden_dim, int):
             hidden_dim = cfg.hidden_dim
@@ -2980,7 +3196,9 @@ class TransformerFeedForwardLayer(BaseLayer):
             "linear2",
             cfg.linear2.set(input_dim=hidden_dim, output_dim=cfg.input_dim),
         )
-        if cfg.structure in ["prenorm", "hybridnorm", "nonorm"]:
+        # Add dropout layers for different structures.
+        # Always apply two dropouts in v2 structure.
+        if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
             self._add_child("dropout1", cfg.dropout)
             self._add_child("dropout2", cfg.dropout)
         elif cfg.structure in ["postnorm"]:
@@ -3051,6 +3269,19 @@ class TransformerFeedForwardLayer(BaseLayer):
             # this layer, e.g., in ParallelTransformerLayer.
             if cfg.residual_weight != 1:
                 x *= cfg.residual_weight
+        elif cfg.structure == "v2":
+            x = self.in_norm(inputs) if NormPosition.IN_NORM in cfg.norm else inputs
+            x = self._linear1_activation(x)
+            x = self.dropout1(x)
+            x = _linear2(x)
+            x = self._remat_name(x, remat_pt2)
+            x = self.res_norm(x) if NormPosition.RES_NORM in cfg.norm else x
+            x = self.dropout2(x)
+            x = self.stochastic_depth(x)
+            if cfg.residual_weight != 1:
+                x *= cfg.residual_weight
+            x += inputs
+            x = self.out_norm(x) if NormPosition.OUT_NORM in cfg.norm else x
         else:
             raise NotImplementedError(cfg.structure)
         return x
@@ -3154,6 +3385,7 @@ class TransformerLayer(BaseTransformerLayer):
         target_positions: Optional[Tensor] = None,
         cached_states: Optional[NestedTensor] = None,
         return_aux: Optional[set[str]] = None,
+        page_pool: Optional[Nested[Tensor]] = None,
     ) -> tuple[Optional[NestedTensor], Optional[BaseTransformerLayer.Output]]:
         """Computes transformer layer outputs and self/cross-attention probabilities.
 
@@ -3170,6 +3402,7 @@ class TransformerLayer(BaseTransformerLayer):
             target_positions: See ``positions`` in the file comments.
             cached_states: Optional NestedTensor as produced by `init_states`.
             return_aux: See comments on BaseTransformerLayer.forward.
+            page_pool: See file-level comments on `page_pool`.
 
         Returns:
             A tuple (cached_states, output):
@@ -3184,6 +3417,7 @@ class TransformerLayer(BaseTransformerLayer):
         """
         if isinstance(data, Tensor):
             self.vlog(3, "transformer.input=%s", data.sum())  # pytype: disable=attribute-error
+            data = self._remat_name(data, "input")
         self_attention_return_aux = set()
         cross_attention_return_aux = set()
         if return_aux:
@@ -3230,6 +3464,7 @@ class TransformerLayer(BaseTransformerLayer):
                 source=self_attention_kv_state,
                 attention_logit_biases=self_attention_logit_biases,
                 return_aux=self_attention_return_aux,
+                page_pool=page_pool,
             )
         else:
             raise ValueError(f"Unrecognized mode {mode}.")
@@ -3518,15 +3753,17 @@ class BottleNeckAdapterTransformerLayer(BaseTransformerLayer):
 def set_attention_partition_specs(
     cfg: MultiheadAttention.Config,
     *,
+    batch_axis_names: Union[str, Sequence[str]] = ("data", "fsdp"),
     fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
     tp_axis_names: Union[str, Sequence[str]] = "model",
+    seq_axis_names: Union[str, Sequence[str]] = "seq",
+    set_attn_activation_specs: bool = False,
 ):
     """Sets `cfg` to shard attention weights over both fsdp and tp axes.
 
     Args:
         cfg: A MultiheadAttention layer config to apply sharding spec to.
-        fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
-        tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
+        **kwargs: See `set_double_shard_weights_config`.
     """
     # Shard weights.
     input_linear_cfg = cfg.input_linear
@@ -3534,6 +3771,10 @@ def set_attention_partition_specs(
         input_linear_cfg = input_linear_cfg.input_linear
     input_linear_cfg.layer.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
     cfg.output_linear.param_partition_spec = (fsdp_axis_names, tp_axis_names, None)
+
+    if set_attn_activation_specs:
+        cfg.q_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names, None)
+        cfg.o_partition_spec = (batch_axis_names, seq_axis_names, tp_axis_names)
 
 
 def set_feed_forward_partition_specs(
@@ -3548,10 +3789,7 @@ def set_feed_forward_partition_specs(
 
     Args:
         cfg: A TransformerFeedForwardLayer layer config to apply sharding spec to.
-        batch_axis_names: Axis name(s) over which we shard the batch dimension of output tensors.
-        fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
-        tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
-        seq_axis_names: Axis name(s) over which we shard sequence-parallel tensors.
+        **kwargs: See `set_double_shard_weights_config`.
     """
     # Shard weights.
     cfg.linear1.param_partition_spec = (fsdp_axis_names, tp_axis_names)
@@ -3568,6 +3806,7 @@ def set_double_shard_weights_config(
     fsdp_axis_names: Union[str, Sequence[str]] = "fsdp",
     tp_axis_names: Union[str, Sequence[str]] = "model",
     seq_axis_names: Union[str, Sequence[str]] = "seq",
+    set_attn_activation_specs: bool = False,
 ):
     """Sets `cfg` to shard FFN and attention weights over both fsdp and tp axes.
 
@@ -3577,32 +3816,35 @@ def set_double_shard_weights_config(
         fsdp_axis_names: Axis name(s) over which we shard fully-sharded-data-parallel tensors.
         tp_axis_names: Axis name(s) over which we shard tensor-parallel tensors.
         seq_axis_names: Axis name(s) over which we shard sequence-parallel tensors.
+        set_attn_activation_specs: Whether to set activation spec of qkvo projections. This may be
+            required in for some complex sharding cases.
     """
 
     # pytype: disable=attribute-error
     if not isinstance(cfg, Sequence):
         cfg = [cfg]
 
+    axis_names = dict(
+        batch_axis_names=batch_axis_names,
+        fsdp_axis_names=fsdp_axis_names,
+        tp_axis_names=tp_axis_names,
+        seq_axis_names=seq_axis_names,
+    )
+
     for layer_cfg in cfg:
         set_attention_partition_specs(
             layer_cfg.self_attention.attention,
-            fsdp_axis_names=fsdp_axis_names,
-            tp_axis_names=tp_axis_names,
+            set_attn_activation_specs=set_attn_activation_specs,
+            **axis_names,
         )
         if layer_cfg.cross_attention is not None:
             set_attention_partition_specs(
                 layer_cfg.cross_attention.attention,
-                fsdp_axis_names=fsdp_axis_names,
-                tp_axis_names=tp_axis_names,
+                set_attn_activation_specs=set_attn_activation_specs,
+                **axis_names,
             )
         if isinstance(layer_cfg.feed_forward, TransformerFeedForwardLayer.Config):
-            set_feed_forward_partition_specs(
-                layer_cfg.feed_forward,
-                batch_axis_names=batch_axis_names,
-                fsdp_axis_names=fsdp_axis_names,
-                tp_axis_names=tp_axis_names,
-                seq_axis_names=seq_axis_names,
-            )
+            set_feed_forward_partition_specs(layer_cfg.feed_forward, **axis_names)
     # pytype: enable=attribute-error
 
 
@@ -3936,6 +4178,7 @@ class _TransformerRepeat(Repeat):
                 assert value.shape[0] == cfg.num_layers, f"{path}={shapes(value)}"
 
         def layer_fn(carry, x_i):
+            x_i, page_pool = x_i
             if mode == ForwardMode.FORWARD:
                 layer_states, layer_outputs = None, self.layer(**carry, **layer_kwargs)
             elif mode == ForwardMode.INIT_STATES:
@@ -3947,7 +4190,10 @@ class _TransformerRepeat(Repeat):
             elif mode == ForwardMode.EXTEND_STEP:
                 assert x_i is not None
                 layer_states, layer_outputs = self.layer.extend_step(
-                    cached_states=x_i, **carry, **layer_kwargs
+                    cached_states=x_i,
+                    **carry,
+                    **layer_kwargs,
+                    page_pool=page_pool,
                 )
             else:
                 raise ValueError(f"Unrecognized mode {mode}.")
@@ -3962,6 +4208,7 @@ class _TransformerRepeat(Repeat):
                 return carry, ys
 
             ys.update({k: v for k, v in layer_outputs._asdict().items() if k not in carry})
+            ys["page_pool"] = page_pool
             return {k: getattr(layer_outputs, k) for k in carry}, ys
 
         if cfg.carry is None:
@@ -3970,10 +4217,16 @@ class _TransformerRepeat(Repeat):
             layer_kwargs["data"] = data
             carry = {k: layer_kwargs.pop(k) for k in cfg.carry}
 
-        repeat_outputs: Repeat.Output = self._run(layer_fn, carry=carry, xs=cached_states)
+        page_pool = layer_kwargs.pop("page_pool", None)
+        repeat_outputs: Repeat.Output = self._run(
+            layer_fn, carry=carry, xs=(cached_states, page_pool)
+        )
         carry = repeat_outputs.carry
         ys = repeat_outputs.ys
         updated_states = ys.pop("cached_states", None)
+        out_page_pool = ys.pop("page_pool", None)
+        if page_pool is not None and out_page_pool is not None:
+            page_pool[:] = out_page_pool  # type: ignore
 
         if cache_init:
             assert ys == {}
@@ -4235,6 +4488,7 @@ def build_remat_spec(
     stack_cfg: Union[
         BaseStackedTransformerLayer.Config, "RepeatedConformerLayer.Config"  # type: ignore
     ],
+    *,
     save_pattern: SavePattern = RematRegexSavePatterns.NATIVE_ATTENTION.value,
     offload_pattern: SavePattern = None,
     offload_dst: str = "pinned_host",

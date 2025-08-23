@@ -10,6 +10,7 @@
 # Copyright 2022 The Pax Authors.
 # Licensed under the Apache License, Version 2.0 (the "License").
 """Test for mixture_of_experts.py"""
+
 import copy
 from functools import partial
 
@@ -20,12 +21,13 @@ from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
 
 from axlearn.common.attention import (
+    NormPosition,
     RepeatedTransformerLayer,
     StackedTransformerLayer,
     TransformerFeedForwardLayer,
     TransformerLayer,
 )
-from axlearn.common.layers import set_bias_recursively
+from axlearn.common.layers import RMSNorm, set_bias_recursively
 from axlearn.common.mixture_of_experts import (
     AdaptiveLoadBalanceLoss,
     Top2Gating,
@@ -33,14 +35,27 @@ from axlearn.common.mixture_of_experts import (
     TransformerFeedForwardMoE,
     _convert_feedforward_to_moe_parameters,
     convert_dense_to_moe_parameters,
+    get_outer_batch_from_mesh,
 )
 from axlearn.common.module import functional as F
-from axlearn.common.test_utils import assert_allclose
-from axlearn.common.utils import get_recursively, set_recursively, shapes
+from axlearn.common.quantized_dot_general.activation_clipping import TanhActivationClippingLayer
+from axlearn.common.quantized_dot_general.layers import (
+    DotGeneralQuantizationType,
+    QuantizedDotGeneral,
+)
+from axlearn.common.test_utils import TestCase, assert_allclose
+from axlearn.common.utils import (
+    HybridMeshShape,
+    MeshShape,
+    get_recursively,
+    infer_mesh_shape,
+    set_recursively,
+    shapes,
+)
 
 
 # pylint: disable=no-self-use,protected-access
-class TransformerFeedForwardMoETest(parameterized.TestCase):
+class TransformerFeedForwardMoETest(TestCase):
     @parameterized.product(is_training=(True, False), outer_batch=(1, 2))
     def test_moe_layer_forward(self, is_training, outer_batch):
         batch_size = 4
@@ -562,6 +577,135 @@ class TransformerFeedForwardMoETest(parameterized.TestCase):
             assert k in fans2_o
             self.assertEqual(v, fans2_o[k])
 
+    @parameterized.product(is_training=(True, False), outer_batch=(1, 2))
+    def test_moe_quantized_einsum(self, is_training, outer_batch):
+        batch_size = 4
+        seq_len = 128
+        input_dim = 8
+
+        ref_cfg = TransformerFeedForwardMoE.default_config().set(name="test")
+        ref_cfg.input_dim = input_dim
+        ref_cfg.hidden_dim = 32
+        ref_cfg.num_experts = 8
+        ref_cfg.num_groups = 4
+        ref_cfg.outer_batch = outer_batch
+        ref_layer = ref_cfg.instantiate(parent=None)
+
+        state = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+
+        test_cfg = ref_cfg.clone()
+        test_cfg.quantized_dot_general = QuantizedDotGeneral.default_config().set(
+            quantization_type=DotGeneralQuantizationType.INT_8,
+            activation_clipping=TanhActivationClippingLayer.default_config().set(
+                clipping_max_abs=1e6
+            ),
+        )
+        test_layer = test_cfg.instantiate(parent=None)
+
+        inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim))
+        ref_outputs, _ = F(
+            ref_layer,
+            is_training=is_training,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(inputs=inputs),
+        )
+        test_outputs, _ = F(
+            test_layer,
+            is_training=is_training,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(inputs=inputs),
+        )
+        err = np.abs(ref_outputs - test_outputs).sum()
+        self.assertGreater(err, 0)
+        self.assertNestedAllClose(ref_outputs, test_outputs, atol=5e-2)
+
+    @parameterized.product(
+        structure=("prenorm", "postnorm", "hybridnorm"),
+        is_training=(True, False),
+        outer_batch=(1, 2),
+    )
+    def test_v2_structure(self, structure, is_training, outer_batch):
+        # Test equivalence bewteen (prenorm, postnorm, hybridnorm) and v2 structure.
+        # prenorm == in_norm (v2)
+        # postnorm == out_norm (v2)
+        # hybridnorm == (in_norm, res_norm) (v2)
+        batch_size = 4
+        seq_len = 128
+        input_dim = 8
+        hidden_dim = 32
+        num_experts = 8
+        num_groups = 4
+
+        ref_cfg = TransformerFeedForwardMoE.default_config().set(
+            name="ref",
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            num_experts=num_experts,
+            num_groups=num_groups,
+            outer_batch=outer_batch,
+            structure=structure,
+            norm=RMSNorm.default_config(),
+        )
+        ref_layer: TransformerFeedForwardMoE = ref_cfg.instantiate(parent=None)
+        ref_state = ref_layer.initialize_parameters_recursively(prng_key=jax.random.PRNGKey(123))
+        inputs = jax.random.uniform(jax.random.PRNGKey(1), shape=(batch_size, seq_len, input_dim))
+        ref_outputs, _ = F(
+            ref_layer,
+            is_training=is_training,
+            prng_key=jax.random.PRNGKey(123),
+            state=ref_state,
+            inputs=dict(inputs=inputs),
+        )
+
+        norm = {}
+        if structure == "prenorm":
+            norm = {NormPosition.IN_NORM: RMSNorm.default_config()}
+        elif structure == "postnorm":
+            norm = {NormPosition.OUT_NORM: RMSNorm.default_config()}
+        elif structure == "hybridnorm":
+            norm = {
+                NormPosition.IN_NORM: RMSNorm.default_config(),
+                NormPosition.RES_NORM: RMSNorm.default_config(),
+            }
+        else:
+            raise ValueError(f"No equivalent structure is available in v2 to {structure}.")
+
+        cfg = TransformerFeedForwardMoE.default_config().set(
+            name="test",
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            num_experts=num_experts,
+            num_groups=num_groups,
+            outer_batch=outer_batch,
+            structure="v2",
+            norm=norm,
+        )
+        layer: TransformerFeedForwardMoE = cfg.instantiate(parent=None)
+        state = ref_state
+        if structure == "prenorm":
+            state["in_norm"] = state["norm"]
+            del state["norm"]
+        elif structure == "postnorm":
+            state["out_norm"] = state["norm"]
+            del state["norm"]
+        elif structure == "hybridnorm":
+            state["in_norm"] = state["prenorm"]
+            state["res_norm"] = state["postnorm"]
+            del state["prenorm"]
+            del state["postnorm"]
+        else:
+            raise ValueError(f"No equivalent structure is available in v2 to {structure}.")
+        outputs, _ = F(
+            layer,
+            is_training=is_training,
+            prng_key=jax.random.PRNGKey(123),
+            state=state,
+            inputs=dict(inputs=inputs),
+        )
+        self.assertNestedAllClose(outputs, ref_outputs)
+
 
 class ParamConversionTest(parameterized.TestCase):
     @parameterized.product(
@@ -708,6 +852,55 @@ class ParamConversionTest(parameterized.TestCase):
             )
             # Expect the same outputs since all experts are identical to the dense one.
             assert_allclose(outputs_dense.data, outputs_moe.data)
+
+
+class GetOuterBatchFromMeshTest(absltest.TestCase):
+    """Tests get_outer_batch_from_mesh."""
+
+    def test_mesh_shape_is_none(self):
+        result = get_outer_batch_from_mesh(
+            mesh_axis_names=["data", "model"],
+            outer_batch_axis_names=["data"],
+            mesh_shape=None,
+        )
+        self.assertIsNone(result)
+
+    def test_regular_mesh_shape(self):
+        mesh_shape: MeshShape = (2, 4, 8)
+        result = get_outer_batch_from_mesh(
+            mesh_axis_names=["data", "fsdp", "model"],
+            outer_batch_axis_names=["data", "fsdp"],
+            mesh_shape=mesh_shape,
+        )
+        self.assertEqual(result, 2 * 4)
+
+    def test_outer_batch_with_hybrid_mesh_shape(self):
+        hybrid = HybridMeshShape(ici_mesh_shape=(2, 8, 1), dcn_mesh_shape=(4, 1, 1))
+        result = get_outer_batch_from_mesh(
+            mesh_axis_names=["data", "model"],
+            outer_batch_axis_names=["data"],
+            mesh_shape=hybrid,
+        )
+        self.assertEqual(result, 2 * 4)
+
+    def test_outer_batch_with_hybrid_mesh_shape_with_raises(self):
+        hybrid = HybridMeshShape(ici_mesh_shape=(2, 4, 1), dcn_mesh_shape=(-1, 2, 1))
+        with self.assertRaisesRegex(NotImplementedError, "Unable to infer number of granules"):
+            get_outer_batch_from_mesh(
+                mesh_axis_names=["data", "fsdp", "model"],
+                outer_batch_axis_names=["data", "fsdp"],
+                mesh_shape=hybrid,
+            )
+
+    def test_outer_batch_with_infer_mesh_shape(self):
+        mesh_shape: MeshShape = (-1, 2, 4)
+        inferred_shape = infer_mesh_shape(mesh_shape, num_devices=8)
+        result = get_outer_batch_from_mesh(
+            mesh_axis_names=["data", "fsdp", "model"],
+            outer_batch_axis_names=["data", "fsdp"],
+            mesh_shape=inferred_shape,
+        )
+        self.assertEqual(result, 1 * 2)
 
 
 if __name__ == "__main__":

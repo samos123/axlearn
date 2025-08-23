@@ -42,17 +42,17 @@ from typing import (
 
 import attr
 import jax
-import jax.flatten_util
 import numpy as np
 from absl import logging
 from jax import numpy as jnp
 from jax._src.ad_checkpoint import name_p
+from jax._src.array import local_to_global_shape
 from jax._src.lax import lax as lax_internal
 from jax._src.mesh import thread_resources
 from jax._src.tree_util import KeyEntry, KeyPath
 from jax.ad_checkpoint import Offloadable, Recompute, Saveable
-from jax.core import Primitive
 from jax.experimental import mesh_utils, multihost_utils
+from jax.extend.core import Primitive
 from jax.sharding import PartitionSpec
 
 from axlearn.common import serialization
@@ -136,7 +136,11 @@ class TensorSpec:
     @property
     def sharding(self) -> jax.sharding.Sharding:
         mesh = thread_resources.env.physical_mesh
-        return jax.sharding.NamedSharding(mesh, self.mesh_axes, memory_kind=self.memory_kind)
+        return jax.sharding.NamedSharding(
+            mesh,
+            PartitionSpec() if self.mesh_axes is None else self.mesh_axes,
+            memory_kind=self.memory_kind,
+        )
 
 
 NestedTensorSpec = Optional[Union[TensorSpec, dict[str, Any]]]
@@ -408,7 +412,7 @@ def tree_paths(
         Note that None is not considered a leaf by jax.tree_util, hence also preserved by
         tree_paths.
     """
-    return jax.tree_util.tree_map_with_path(
+    return jax.tree.map_with_path(
         lambda kp, _: separator.join(_key_entry_to_str(k) for k in kp), tree, is_leaf=is_leaf
     )
 
@@ -800,8 +804,8 @@ class DataPartitionType(Enum):
 
 
 def data_partition_type_to_spec(
-    partition: Union[DataPartitionType, PartitionSpec],
-) -> PartitionSpec:
+    partition: Union[DataPartitionType, Nested[PartitionSpec]],
+) -> Nested[PartitionSpec]:
     """Returns a PartitionSpec for the given partition type."""
     if partition == DataPartitionType.FULL:
         return input_partition_spec()
@@ -809,15 +813,16 @@ def data_partition_type_to_spec(
         return PartitionSpec(None)
     elif isinstance(partition, PartitionSpec):
         return partition
+    elif isinstance(partition, dict):
+        return {k: data_partition_type_to_spec(v) for k, v in partition.items()}
     else:
         raise NotImplementedError(f"Unsupported partition: {partition}")
 
 
-# TODO(markblee): Rename to `host_to_global_array` for consistency with `global_to_host_array`.
-def host_to_global_device_array(
+def host_to_global_array(
     host_arrays: Nested[Union[np.ndarray, Tensor]],
     *,
-    partition: Union[PartitionSpec, DataPartitionType] = DataPartitionType.FULL,
+    partition: Union[Nested[PartitionSpec], DataPartitionType] = DataPartitionType.FULL,
 ) -> Nested[Tensor]:
     """Converts the given host device arrays to global device arrays.
 
@@ -850,12 +855,12 @@ def host_to_global_device_array(
     )
     process_count = jax.process_count()
 
-    def make_gda(x: np.ndarray, partition_spec: PartitionSpec):
+    def make_array(x: np.ndarray, partition_spec: PartitionSpec):
         if partition == DataPartitionType.FULL:
             global_shape = (x.shape[0] * process_count, *x.shape[1:])
         elif partition == DataPartitionType.REPLICATED:
             global_shape = (x.shape[0], *x.shape[1:])
-        elif isinstance(partition, PartitionSpec):
+        elif isinstance(partition, (PartitionSpec, dict)):
             global_shape = None  # Allow jax to infer.
         else:
             raise NotImplementedError(f"Unsupported partition: {partition}")
@@ -865,7 +870,44 @@ def host_to_global_device_array(
             global_shape=global_shape,
         )
 
-    return jax.tree.map(make_gda, host_arrays, partition_specs)
+    return jax.tree.map(make_array, host_arrays, partition_specs)
+
+
+def host_to_global_specs(
+    host_arrays: Nested[jax.ShapeDtypeStruct], *, partition: PartitionSpec
+) -> Nested[jax.ShapeDtypeStruct]:
+    """Converts the given host-local specs to global array specs.
+
+    The API has the same semantics as `host_to_global_array`, which takes Tensors instead of specs.
+    Please refer to `host_to_global_array` docstring for details.
+    """
+    mesh = thread_resources.env.physical_mesh
+    partition_specs = complete_partition_spec_tree(
+        jax.tree_util.tree_structure(host_arrays),
+        data_partition_type_to_spec(partition),
+    )
+
+    def make_array_spec(x: jax.ShapeDtypeStruct, partition_spec: PartitionSpec):
+        # `local_to_global_shape` is also used by `jax.make_array_from_process_local_data`.
+        # It uses the process indices from devices in the mesh, which allows it to be compatible
+        # with the fake devices used in AOT.
+        sharding = jax.sharding.NamedSharding(mesh, partition_spec)
+        global_shape = local_to_global_shape(sharding, local_shape=x.shape)
+        # We use the sharding from `partition`, as host-local arrays do not have sharding.
+        return jax.ShapeDtypeStruct(shape=global_shape, dtype=x.dtype, sharding=sharding)
+
+    return jax.tree.map(make_array_spec, host_arrays, partition_specs)
+
+
+def host_to_global_device_array(*args, **kwargs) -> Nested[Tensor]:
+    """A deprecated alias for `host_to_global_array`.
+
+    Please use `host_to_global_array` instead.
+    """
+    logging.log_first_n(
+        logging.WARN, "host_to_global_device_array is renamed to host_to_global_array.", 1
+    )
+    return host_to_global_array(*args, **kwargs)
 
 
 # TODO(markblee): Remove partition arg.
@@ -1162,7 +1204,7 @@ def per_param_dtype_by_path(
     """
 
     def fn(
-        tree: Union[Nested[Tensor], Nested[TensorSpec]]
+        tree: Union[Nested[Tensor], Nested[TensorSpec]],
     ) -> Union[Nested[Tensor], Nested[TensorSpec]]:
         if update_rules is None:
             return jax.tree.map(lambda x: default_dtype, tree_paths(tree))
@@ -1217,7 +1259,7 @@ def cast_floats_per_param(
 
 
 def canonicalize_per_param_dtype(
-    param_dtype: Union[jnp.dtype, ConfigOr[PerParamFn[jnp.dtype]]]
+    param_dtype: Union[jnp.dtype, ConfigOr[PerParamFn[jnp.dtype]]],
 ) -> ConfigOr[PerParamFn[jnp.dtype]]:
     """Canonicalize the input `param_dtype` to a consistent format of
     `ConfigOr[PerParamFn[jnp.dtype]]`, which handles three possible cases:
@@ -1429,11 +1471,6 @@ def tree_merge(
     # Use the override function if primary or secondary is a leaf.
     if not (isinstance(primary, dict) or isinstance(secondary, dict)):
         return copy.deepcopy(leaf_merge_fn(primary, secondary))
-    # pylint: disable-next=unidiomatic-typecheck
-    if type(primary) != type(secondary):
-        raise ValueError(
-            f"Incompatible subtree types: primary={type(primary)}, secondary={type(secondary)}"
-        )
     # Use type() so that if primary is a VDict, out_tree is also a VDict.
     out_tree = type(primary)(primary)
     for k in secondary:
@@ -1861,9 +1898,6 @@ def thread_stack_traces() -> Sequence[Sequence[str]]:
 def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
     """Generate the (key, value) pairs for the immediate children of a pytree `node`.
 
-    The returned children match those returned by
-    `jax.tree_util.default_registry.flatten_one_level()`.
-
     Reference: jax._src.tree_util.generate_key_paths()
 
     Example:
@@ -1871,14 +1905,6 @@ def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
         assert pytree_children(dict(a=[1,2])) == [(DictKey('a'), [1,2])]
         ```
     """
-    # pylint: disable-next=protected-access
-    registry_with_keypaths = jax._src.tree_util._registry_with_keypaths
-
-    key_handler = registry_with_keypaths.get(type(node))
-    if key_handler:
-        key_children, _ = key_handler.flatten_with_keys(node)
-        return key_children
-
     flat = jax.tree_util.default_registry.flatten_one_level(node)
     if flat is None:
         return []
@@ -1886,6 +1912,11 @@ def pytree_children(node: Any) -> Sequence[tuple[KeyEntry, Any]]:
     if isinstance(node, tuple) and hasattr(node, "_fields") and flat[1] == type(node):
         # Handle namedtuple as a special case, based on heuristic.
         return [(jax.tree_util.GetAttrKey(s), getattr(node, s)) for s in node._fields]
+
+    key_children, _ = jax.tree_util.default_registry.flatten_one_level_with_keys(node)
+    if key_children:
+        return key_children
+
     return [(jax.tree_util.FlattenedIndexKey(i), c) for i, c in enumerate(flat[0])]
 
 
@@ -1952,7 +1983,7 @@ class DeviceUsage:
     hbm_memory_bandwidth_utilization: Optional[float] = None
 
 
-def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] = None) -> Tensor:
+def sequence_mask(*, lengths: Tensor, max_len: int, dtype: jnp.dtype = jnp.bool) -> Tensor:
     """Computes a mask over sequence positions for each given length.
 
     Args:
@@ -1963,15 +1994,26 @@ def sequence_mask(*, lengths: Tensor, max_len: int, dtype: Optional[jnp.dtype] =
     Returns:
         Tensor [..., T]. 1 is valid and 0 is padding.
     """
-    if dtype is None:
-        dtype = lengths.dtype
-
     prefix_axis = tuple(range(lengths.ndim))
     # [..., T]
     sequence = jnp.expand_dims(jnp.arange(max_len), axis=prefix_axis)
     # [..., 1]
     lengths = lengths[..., jnp.newaxis]
     return (sequence < lengths).astype(dtype)
+
+
+def safe_not(mask: Tensor) -> Tensor:
+    """Inverts a boolean mask.
+
+    Commonly used to switch between paddings and mask.
+
+    Args:
+        mask: A boolean tensor.
+
+    Returns:
+        A boolean tensor of the same shape.
+    """
+    return ~(mask.astype(jnp.bool))
 
 
 def validate_contains_paths(x: Nested[Tensor], paths: Sequence[str]):

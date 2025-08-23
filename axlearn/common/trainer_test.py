@@ -1083,15 +1083,15 @@ class TrainerTest(test_utils.TestCase):
             self.assertEqual(x.shape[0], global_logical_batch_size)
 
         def check_sharding(path: str, x: Tensor):
-            # It's useful to compare normalized PartitionSpecs with `_normalized_spec`, e.g.
-            # ("data",) vs "data"; so we disable the lint.
+            # It's useful to compare normalized PartitionSpecs with `_normalized_spec_for_aval`,
+            # e.g. ("data",) vs "data"; so we disable the lint.
             # pylint: disable=protected-access
             if x.shape[0] > 1:
                 jax.debug.inspect_array_sharding(
                     x,
                     callback=lambda sharding: self.assertEqual(
-                        partition_spec._normalized_spec(x.ndim),
-                        sharding.spec._normalized_spec(x.ndim),
+                        partition_spec._normalized_spec_for_aval(x.ndim),
+                        sharding.spec._normalized_spec_for_aval(x.ndim),
                         msg=f"{path=}, {sharding=}",
                     ),
                 )
@@ -1215,6 +1215,26 @@ class TrainerTest(test_utils.TestCase):
     def test_input_dispatch_every_other_process(self, multiple: float):
         """Tests input dispatch with some padding feeds. Requires process_count > 1."""
         self._test_input_dispatch(multiple, backend="tpu")
+
+    def test_optional_batch_axes(self):
+        """Tests that we can omit batch_axis_names."""
+        mesh_shape = (jax.device_count(), 1)
+        global_logical_batch_size = mesh_shape[0]
+        partition_spec = PartitionSpec("model")  # Something other than "data".
+
+        # Explicitly set a partition spec on input.
+        input_cfg = self._dummy_input_checking_input(global_logical_batch_size)
+        input_cfg.partition_spec = partition_spec
+
+        cfg = self._trainer_config(input_cfg)
+        cfg.batch_axis_names = None
+        cfg.max_step = 3
+        cfg.mesh_shape = mesh_shape
+        cfg.model = self._dummy_input_checking_model(
+            global_logical_batch_size, partition_spec=partition_spec
+        )
+        trainer: SpmdTrainer = cfg.instantiate(parent=None)
+        self.assertEqual(partition_spec, trainer.input.partition_spec)
 
 
 class SelectMeshConfigTest(test_utils.TestCase):

@@ -49,6 +49,7 @@ from absl import logging
 from jax import lax
 from jax._src.cudnn.fused_attention_stablehlo import check_compute_capability
 from jax.experimental import pallas as pl
+from jax.experimental.pallas.triton import TritonCompilerParams
 
 from axlearn.common.attention_bias import (
     NEG_INF,
@@ -57,9 +58,10 @@ from axlearn.common.attention_bias import (
     MaskFnAttentionBias,
     split,
 )
-from axlearn.common.flash_attention.common import BaseSingleStepDecoding
-from axlearn.common.flash_attention.gpu_attention import NoPopDict
-from axlearn.common.utils import Tensor
+from axlearn.common.flash_attention.common import BaseSingleStepDecoding, get_gpu_dot_precision
+from axlearn.common.kv_cache.base_kv_cache import BaseKVCache
+from axlearn.common.kv_cache.kv_cache import KVCache
+from axlearn.common.utils import Nested, Tensor
 
 
 # Note: split_k_seq_len must be a multiple of block_k.
@@ -83,11 +85,7 @@ def _attn_forward_kernel(
 ):
     _, head_dim = q_ref.shape
     split_k_seq_len, _ = k_ref.shape
-    precision = (
-        lax.Precision.HIGHEST
-        if jnp.float32 in (q_ref.dtype, k_ref.dtype, v_ref.dtype)
-        else lax.Precision.DEFAULT
-    )
+    precision = get_gpu_dot_precision(q_ref.dtype)
     prog_i, prog_j = pl.program_id(1), pl.program_id(2)
     q_mask = (block_h * prog_i + jnp.arange(block_h) < qhead_per_kvhead)[:, None]
 
@@ -254,7 +252,7 @@ def _decode_attn_unbatched(
             pl.BlockSpec((None, None, block_h), lambda kv_h, q_h, k: (kv_h, k, q_h)),  # l
             pl.BlockSpec((None, None, block_h), lambda kv_h, q_h, k: (kv_h, k, q_h)),  # m
         ],
-        compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
+        compiler_params=TritonCompilerParams(num_warps=num_warps, num_stages=num_stages),
         out_shape=[
             jax.ShapeDtypeStruct(
                 shape=(num_kvheads, k_splits, *q.shape[1:]), dtype=jnp.float32
@@ -283,17 +281,25 @@ def _decode_attn_unbatched(
 class GPUDecoding(BaseSingleStepDecoding):
     """Implements GPU FlashDecoding with GQA support."""
 
+    def is_supported(
+        self,
+        input_batch: Nested[Tensor | BaseAttentionBias],
+        kv_cache_type: Optional[type[BaseKVCache]],
+    ) -> bool:
+        """See `BaseSingleStepDecoding.is_supported`."""
+        if not super().is_supported(input_batch, kv_cache_type=kv_cache_type):
+            return False
+        if kv_cache_type != KVCache:
+            return self._log_unsupported(f"{kv_cache_type=}")
+        return True
+
     @functools.partial(jax.jit, static_argnames=["self"])
     def __call__(
         self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        bias: BaseAttentionBias,
-        prng_key: Optional[Tensor] = None,
+        input_batch: Nested[Tensor | BaseAttentionBias],
     ) -> Tensor:
         """See `BaseFlashAttention.__call__`."""
-        del prng_key
+        bias: BaseAttentionBias = input_batch["bias"]
         mask, explicit_bias = split(bias, MaskFnAttentionBias)
         if mask is None or mask.target_positions is None:
             raise ValueError("Cannot retrieve MaskFnAttentionBias or target_positions.")
@@ -301,6 +307,9 @@ class GPUDecoding(BaseSingleStepDecoding):
         kv_seq_len = mask.target_positions[:, -1] + 1
         logging.info("Using mask_fn=%s for FlashDecoding.", mask_fn)
 
+        query: Tensor = input_batch["query"]
+        key: Tensor = input_batch["key"]
+        value: Tensor = input_batch["value"]
         query = query.squeeze(1)
         batch_size, q_heads, head_dim = query.shape
         padded_kv_seq_len, kv_heads = key.shape[1], key.shape[2]

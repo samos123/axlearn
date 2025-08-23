@@ -11,7 +11,7 @@ import re
 import tempfile
 from collections import OrderedDict, defaultdict
 from collections.abc import Iterator, Sequence
-from functools import partial
+from functools import partial, wraps
 from tempfile import mkdtemp
 from typing import Any, NamedTuple, Optional, Protocol, TypeVar, Union
 from unittest.mock import patch
@@ -293,6 +293,20 @@ class TestCase(parameterized.TestCase):
                 f"Max difference = {diff.max()}",
             )
 
+    def assertNestedAllCloseWithOutliers(
+        self, actual: NestedTensor, desired: NestedTensor, *, tolerance_map: dict[float, Tolerance]
+    ):
+        """A nested variant of `assertAllCloseWithOutliers`."""
+        a_kv = flatten_items(actual)
+        b_kv = flatten_items(desired)
+        self.assertCountEqual([k for k, _ in a_kv], [k for k, _ in b_kv])
+        a_dict = dict(a_kv)
+        b_dict = dict(b_kv)
+        for k in a_dict:
+            a_value = a_dict[k]
+            b_value = b_dict[k]
+            self.assertAllCloseWithOutliers(a_value, b_value, tolerance_map=tolerance_map)
+
 
 # TODO(markblee): Move this to axlearn/experiments/test_utils.py, where it's used.
 class TrainerConfigTestCase(TestCase):
@@ -469,14 +483,14 @@ def _complete_param_init_spec_tree(
 
     # Complete the param_init_specs to match the params treedef.
     # Replace with Nones so that jax doesn't treat them as leaves.
-    params_with_nones = jax.tree_map(
+    params_with_nones = jax.tree.map(
         partial(replace_keys, mapping={k: None for k in delegates}), params, is_leaf=is_leaf
     )
     _, treedef = jax.tree_util.tree_flatten(params_with_nones)
     inits_with_nones = jax.tree_util.tree_unflatten(treedef, param_init_specs)
 
     # Replace the Nones with a delegate.
-    return jax.tree_map(partial(replace_keys, mapping=delegates), inits_with_nones, is_leaf=is_leaf)
+    return jax.tree.map(partial(replace_keys, mapping=delegates), inits_with_nones, is_leaf=is_leaf)
 
 
 def read_param_init_specs_recursively(
@@ -664,7 +678,7 @@ def dummy_padding_mask(*, batch_size: int, max_seq_len: int) -> Tensor:
     input_len = jax.random.randint(
         jax.random.PRNGKey(123), shape=(batch_size,), minval=0, maxval=max_seq_len
     )
-    return lower_diag[input_len].astype(jnp.int32)
+    return lower_diag[input_len].astype(jnp.bool)
 
 
 # TODO(markblee): Update to take prng_key explicitly.
@@ -945,3 +959,23 @@ def initialize_parameters_with_prebuilt(
         prebuilt,
         initialized,
     )
+
+
+# Starting from Jax 0.5.0, jax_threefry_partitionable is enabled by default.
+# https://docs.jax.dev/en/latest/changelog.html#jax-0-5-0-jan-17-2025
+# This is a breaking change and some unit tests which expect specific values
+# need to either change the expected numerical values, or toggle off this feature.
+# We add a knob to turn off this for easy backward compatibility,
+# and expect to update the unit tests by owners soon.
+def set_threefry_partitionable(on: bool = False):
+    """Helper decorator to enable/disable threefry_partitionable."""
+
+    def decorator_set(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            with jax.threefry_partitionable(on):
+                return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator_set

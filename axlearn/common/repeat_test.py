@@ -152,7 +152,11 @@ class RepeatTest(TestCase):
 
     @parameterized.product(
         dtype=(jnp.float32, jnp.bfloat16),
-        remat_spec=(None, RematSpec(prevent_cse=False)),
+        remat_spec=(
+            None,
+            RematSpec(prevent_cse=False),
+            RematSpec(policy=jax.checkpoint_policies.everything_saveable),
+        ),
         drop_output=(None, config_for_function(_drop_by_regex).set(rules=["module_outputs.*"])),
         num_layers_total=(4, 6),
         unroll=(True, False, 1, 2),
@@ -162,7 +166,11 @@ class RepeatTest(TestCase):
         cfg = TestEnsemble.default_config().set(
             name="test", num_layers=num_layers_total, dtype=dtype
         )
-        cfg.repeat_layer.set(remat_spec=remat_spec, drop_output=drop_output, unroll=unroll)
+        cfg.repeat_layer.set(
+            remat_spec=remat_spec,
+            drop_output=drop_output,
+            unroll=unroll,
+        )
         layer: TestEnsemble = cfg.instantiate(parent=None)
         self.assertEqual(
             PartitionSpec(None),
@@ -344,7 +352,11 @@ class RepeatTest(TestCase):
 
     @parameterized.product(
         dtype=[jnp.float32, jnp.bfloat16],
-        remat_spec=[None, RematSpec(prevent_cse=False)],
+        remat_spec=(
+            None,
+            RematSpec(prevent_cse=False),
+            RematSpec(policy=jax.checkpoint_policies.everything_saveable),
+        ),
     )
     def test_shared_module(self, dtype, remat_spec):
         """Test repeat with shared modules."""

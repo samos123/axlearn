@@ -30,7 +30,8 @@ def fake_process(target, *args, kwargs, **rest):
 class VertexAITensorboardUploaderTest(absltest.TestCase):
     """Tests VertexAITensorboardUploader."""
 
-    @mock.patch("multiprocessing.Process", side_effect=fake_process)
+    @mock.patch("resource.setrlimit")
+    @mock.patch("multiprocessing.get_context")
     @mock.patch(f"{uploader.TensorBoardUploader.__module__}.TensorBoardUploader", autospec=True)
     @mock.patch(
         f"{initializer.global_config.__module__}.global_config.create_client",
@@ -45,9 +46,16 @@ class VertexAITensorboardUploaderTest(absltest.TestCase):
         return_value=("fake_bucket", "fake_folder"),
     )
     def test_uploader_calls(
-        self, bucket_folder_fn, create_client_fn, tb_uploader_class, unused
+        self,
+        bucket_folder_fn,
+        create_client_fn,
+        tb_uploader_class,
+        mock_get_context,
+        mock_set_resource_limit,
     ):  # pylint: disable=no-self-use
-        del unused
+        mock_context = mock.MagicMock()
+        mock_context.Process.side_effect = fake_process
+        mock_get_context.return_value = mock_context
 
         mock_settings = {
             "vertexai_tensorboard": "fake_tb_instance",
@@ -61,6 +69,8 @@ class VertexAITensorboardUploaderTest(absltest.TestCase):
             )
         tb_uploader = cfg.instantiate()
         tb_uploader.upload()
+        mock_set_resource_limit.assert_called_once()
+        mock_get_context.assert_called_once_with("spawn")
         create_client_fn.assert_called_once()
         bucket_folder_fn.assert_called_once()
         tb_uploader_class.return_value.create_experiment.assert_called_once()

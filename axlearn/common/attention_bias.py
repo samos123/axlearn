@@ -39,7 +39,7 @@ from jax.sharding import PartitionSpec
 
 from axlearn.common import struct
 from axlearn.common.config import ClassConfigBase, ConfigOr, config_for_class, maybe_instantiate
-from axlearn.common.utils import Tensor
+from axlearn.common.utils import Tensor, safe_not
 
 NEG_INF = -1e15
 
@@ -567,11 +567,18 @@ class MaskFnAttentionBias(BoolAttentionBias):
     def partition_spec(
         self, mha_dim_to_partition_spec: dict[str, PartitionSpec]
     ) -> Union[BaseAttentionBias, PartitionSpec]:
-        batch = mha_dim_to_partition_spec["bnts"][0]
+        if mha_dim_to_partition_spec["bnts"] == PartitionSpec(None):
+            batch = target = source = None
+        else:
+            batch, _, target, source = mha_dim_to_partition_spec["bnts"]
         return dataclasses.replace(
             self,
-            target_positions=PartitionSpec(None if self.target_positions.shape[0] == 1 else batch),
-            source_positions=PartitionSpec(None if self.source_positions.shape[0] == 1 else batch),
+            target_positions=PartitionSpec(
+                None if self.target_positions.shape[0] == 1 else batch, target
+            ),
+            source_positions=PartitionSpec(
+                None if self.source_positions.shape[0] == 1 else batch, source
+            ),
         )
 
 
@@ -786,7 +793,7 @@ def bool_to_bias(mask: OpT) -> OpT:
         return None
     if mask.dtype != jnp.bool:
         raise ValueError("mask must be a Boolean tensor.")
-    return (~mask) * NEG_INF
+    return safe_not(mask) * NEG_INF
 
 
 def _make_bool_segment_mask(*, source_segments: Tensor, target_segments: Tensor) -> Tensor:

@@ -291,7 +291,7 @@ class MergeStateConverter(Converter):
 
     def source_to_target(self, source: Builder.State, aux: Builder.State) -> Builder.State:
         """Source is newly loaded state, aux is original state."""
-        new_trainer_state = jax.tree_map(
+        new_trainer_state = jax.tree.map(
             self._selector,
             utils.tree_paths(aux.trainer_state),
             aux.trainer_state,
@@ -595,78 +595,6 @@ def traverse_and_set_target_state_parameters(
     return target_state
 
 
-class FlaxPretrainedBuilder(Builder):
-    """Builds (partial) model state from supplied flax states.
-
-    The function reads model parameters from configured state supplier, and
-    sets the corresponding model state to these parameters.
-
-    In the following context, the target refers to the model state.
-    The source refers to the pretrained model.
-
-    The builder will replace the target model's parameters under
-    target_scope1->target_scope2->... with source parameters under
-    source_scope1->source_scope2->...
-    target[target_scope1][target_scope2] = source[source_scope1][source_scope2]
-
-    Note that target[target_scope1][target_scope2] should address to a Flax module, not
-    regular axlearn module.
-    """
-
-    @config_class
-    class Config(Builder.Config):
-        flax_state_supplier_config: Required[InstantiableConfig] = REQUIRED
-        # The target_scope is defined as a list of strings with multiple scope names.
-        # If target_scope == [], it means the whole model state parameters will be replaced.
-        target_scope: Sequence[str] = []
-        # The source_scope is defined as a list of strings with multiple scope names.
-        # If source_scope == [], it means the whole diffusers model parameters will be
-        # used for replacement.
-        source_scope: Sequence[str] = []
-
-    def input_state_type(self) -> Builder.StateType:
-        return Builder.StateType.TENSORS
-
-    def __call__(self, state: Builder.State) -> Builder.State:
-        cfg = self.config
-        source_params = cfg.flax_state_supplier_config.instantiate()
-
-        state.step = 0
-
-        parent_state = state.trainer_state.model
-        if len(cfg.target_scope) == 0:
-            target_flax_state = parent_state["params"]
-        else:
-            for scope in cfg.target_scope[:-1]:
-                if scope not in parent_state:
-                    raise ValueError()
-                parent_state = parent_state[scope]
-            target_flax_state = parent_state[cfg.target_scope[-1]]["params"]
-
-        restored_target_state = traverse_and_set_target_state_parameters(
-            target_state=target_flax_state,
-            target_scope=[],
-            source_params=source_params,
-            source_scope=[],
-        )
-
-        # Check the shape between the original state and the new state.
-        shape_check_msg = check_param_shape_alignment(target_flax_state, restored_target_state)
-        if shape_check_msg:
-            raise ValueError(shape_check_msg)
-
-        if len(cfg.target_scope) == 0:
-            new_trainer_state = state.trainer_state._replace(
-                model={"params": restored_target_state}
-            )
-        else:
-            parent_state[cfg.target_scope[-1]] = {"params": restored_target_state}
-            new_trainer_state = state.trainer_state
-
-        built_keys = state.built_keys.union({key for key, _ in flatten_items(new_trainer_state)})
-        return Builder.State(step=0, trainer_state=new_trainer_state, built_keys=built_keys)
-
-
 def torch_to_axlearn_converter(
     module: str = "axlearn.common.param_converter",
     dst_layer: Optional[ConfigOr[Union[BaseLayer, type]]] = None,
@@ -866,7 +794,7 @@ class ModelStateScopeConverter(BaseConverterFromPretrainedModel):
 
         for target_scope, source_scope in self.scopes.items():
             orig_source_model = utils.get_recursively(source.trainer_state.model, source_scope)
-            source_model = jax.tree_util.tree_map_with_path(
+            source_model = jax.tree.map_with_path(
                 lambda path, leaf, source_scope=source_scope: _copy_leaf(
                     path, leaf, source_scope=source_scope
                 ),

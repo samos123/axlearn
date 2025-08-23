@@ -35,10 +35,13 @@ from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import config_for_function
 from axlearn.common.decoder import LmHead
 from axlearn.common.embedding import TransformerTextEmbeddings
+from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
+from axlearn.common.flash_attention.remat import save_or_offload_flash_attention_policy
 from axlearn.common.layers import RMSNorm
 from axlearn.common.trainer import SpmdTrainer
 from axlearn.common.trainer_config_modifier import (
     ChainConfigModifier,
+    FP8ConfigModifier,
     GradientAccumulationModifier,
     MeshShapeModifier,
     ModuleConfigModifier,
@@ -46,6 +49,7 @@ from axlearn.common.trainer_config_modifier import (
     RematSpecModifier,
 )
 from axlearn.common.utils import (
+    combine_remat_policies,
     extended_checkpoint_policies,
     save_and_offload_only_these_names_regex,
 )
@@ -125,6 +129,47 @@ TOTAL_TOKENS = {
         "70B": 15 * (1024**4),  # 15T tokens
     },
 }
+
+
+def offload_dots_saveable_policy(*_, **__):
+    """A rematerialization policy function used in RematSpec to offload dot_general_p
+    operations from device to pinned host memory.
+
+    Args:
+        *_: Ignored positional arguments.
+        **__: Ignored keyword arguments.
+
+    Returns:
+        A policy function that offloads dot_general_p from device to pinned host
+    memory.
+    """
+    return config_for_function(extended_checkpoint_policies.offload_dots_saveable).set(
+        offload_src="device", offload_dst="pinned_host"
+    )
+
+
+def offload_attention_proj_policy(*_, **__):
+    """A rematerialization policy function used in RematSpec to offload attention
+    projection intermediates during model execution.
+
+    Args:
+        *_: Ignored positional arguments.
+        **__: Ignored keyword arguments.
+
+    Returns:
+        A checkpoint policy function that offloads native attention projection intermediates
+        from device to pinned host memory, enabling memory-efficient training with checkpoint
+        support.
+    """
+    return config_for_function(
+        extended_checkpoint_policies.save_and_offload_only_these_names_regex
+    ).set(
+        names_which_can_be_saved=None,
+        names_which_can_be_offloaded=RematRegexSavePatterns.NATIVE_ATTENTION.value,
+        offload_src="device",
+        offload_dst="pinned_host",
+    )
+
 
 # Llama3 uses 16m tokens after 2.87T tokens.
 # https://arxiv.org/pdf/2407.21783
@@ -254,18 +299,7 @@ def get_trainer_kwargs(
     rope_theta = ROPE_THETA[version]
 
     trn2_config = _generate_trn2_custom_configs(model_size, version=version)
-    offload_dots_saveable_policy = config_for_function(
-        extended_checkpoint_policies.offload_dots_saveable
-    ).set(offload_src="device", offload_dst="pinned_host")
-    # To make it work better with v3 8k sequence length.
-    offload_attention_proj_policy = config_for_function(
-        extended_checkpoint_policies.save_and_offload_only_these_names_regex
-    ).set(
-        names_which_can_be_saved=None,
-        names_which_can_be_offloaded=RematRegexSavePatterns.NATIVE_ATTENTION.value,
-        offload_src="device",
-        offload_dst="pinned_host",
-    )
+
     # dict() is more readable here.
     # pylint: disable=use-dict-literal
     if model_size == "test":
@@ -398,7 +432,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_dots_saveable_policy,
                                     ),
                                 }
@@ -417,7 +451,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_dots_saveable_policy,
                                     ),
                                 }
@@ -436,7 +470,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True, policy=jax_remat_policies.dots_saveable
+                                        prevent_cse=False, policy=jax_remat_policies.dots_saveable
                                     ),
                                 }
                             ),
@@ -453,7 +487,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_attention_proj_policy,
                                     ),
                                 }
@@ -462,8 +496,28 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
-                # tpu-v5p.
-                ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
+                (
+                    "tpu-v5p-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                # fsdp=8 is also ok, only 2% slower step time.
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=config_for_function(combine_remat_policies).set(
+                                            policy_1=save_or_offload_flash_attention_policy(),
+                                            policy_2=jax_remat_policies.dots_saveable,
+                                        ),
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
                 # H100/A100 80G.
                 # Maximum per-node batch size = 64, hence need >= 32 nodes.
                 # Without sequence sharding, the maximum number of devices <= batch_size,
@@ -471,8 +525,31 @@ def get_trainer_kwargs(
                 # v2 on gpu-p5.48xlarge-256, step time: 1.78s/step, MFU 39%.
                 # TODO(kelvin-zou): need to match 1.5s/step perf on TransformerEngine.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+                (
+                    "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
+                            )
+                        ],
+                    ),
+                ),
+                # Ensure the gpu_block_size is updated for Blackwell (B200 / A4)
+                (
+                    "gpu-(a4-highgpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
+                            ),
+                            # Modify the GPU block-size for B200 platform (Pallas kernels)
+                            FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
+                        ],
+                    ),
                 ),
                 (
                     "neuron-(trn2|trn2n).48xlarge-64",
@@ -519,7 +596,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_dots_saveable_policy,
                                     ),
                                 }
@@ -538,7 +615,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_dots_saveable_policy,
                                     ),
                                 }
@@ -556,7 +633,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True, policy=jax_remat_policies.dots_saveable
+                                        prevent_cse=False, policy=jax_remat_policies.dots_saveable
                                     ),
                                 }
                             ),
@@ -565,7 +642,8 @@ def get_trainer_kwargs(
                 ),
                 ("tpu-v5p-.*", mesh_shape_from_axes(data=-1, fsdp=8)),
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
+                    # pylint: disable=line-too-long
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g|a4-highgpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
                 (
@@ -618,8 +696,38 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_dots_saveable_policy,
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+                (
+                    "tpu-v5p-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved="|".join(
+                                                [
+                                                    RematRegexSavePatterns.FLASH_ATTENTION.value,
+                                                    ".*linear1_0",
+                                                ]
+                                            ),
+                                            names_which_can_be_offloaded=None,
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
                                     ),
                                 }
                             ),
@@ -637,7 +745,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_attention_proj_policy,
                                     ),
                                 }
@@ -657,7 +765,7 @@ def get_trainer_kwargs(
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
+                                        prevent_cse=False,
                                         policy=offload_attention_proj_policy,
                                     ),
                                 }
@@ -672,6 +780,28 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
+                ),
+                (
+                    "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
+                            ),
+                        ],
+                    ),
+                ),
+                (
+                    "gpu-(a4-highgpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=16)
+                            ),
+                            # Modify the GPU block-size for B200 platform (Pallas kernels)
+                            FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
+                        ],
+                    ),
                 ),
                 (
                     "neuron-(trn2|trn2n).48xlarge-64",
@@ -841,6 +971,55 @@ def trainer_configs(
             ),
             **kwargs,
         )
+
+        def make_fp8_config(base_config_name: str) -> SpmdTrainer.Config:
+            """Make a FP8 variant of the base config.
+
+            Not all accelerators are compatible with FP8. Support is currently
+            available for NVIDIA H100, H200, and B200.
+
+            Args:
+                base_config_name: The base config name.
+
+            Returns:
+                A trainer config that uses FP8.
+            """
+
+            # pytype: disable=annotation-type-mismatch
+            cfg: SpmdTrainer.Config = config_map[base_config_name]().clone()
+            for accelerator, current_config in cfg.mesh_rules:
+                # Only create FP8 configs for accelerators that support them
+                if any(
+                    supported_accelerator in accelerator
+                    for supported_accelerator in [
+                        "a3-highgpu-8g",
+                        "a3-megagpu-8g",
+                        "a3-ultragpu-8g",
+                        "a4-highgpu-8g",
+                        "p5.48xlarge",
+                        "p4de.24xlarge",
+                    ]
+                ):
+                    # If we already are using ChainConfigModifier, just append the FP8ConfigModifier
+                    if isinstance(current_config, ChainConfigModifier.Config):
+                        current_config.config_modifiers.append(
+                            FP8ConfigModifier.default_config().set(fp8_amax_history_length=128)
+                        )
+                    else:
+                        # Create a new ChainConfigModifier, preserving the mesh_shape
+                        current_config = ChainConfigModifier.default_config().set(
+                            config_modifiers=[
+                                MeshShapeModifier.default_config().set(mesh_shape=current_config),
+                                FP8ConfigModifier.default_config().set(fp8_amax_history_length=128),
+                            ]
+                        )
+            return cfg
+
+        # Make FP8 config, excluding the test model size
+        make_fp8_config_func = functools.partial(make_fp8_config, config_name)
+        if model_size != "test":
+            config_map[f"{config_name}-fp8"] = make_fp8_config_func
+
         if model_size == "test":
 
             def wrapper(config_name: str = config_name):
@@ -895,5 +1074,12 @@ def trainer_configs(
             # Make single-host config
             make_single_host_config_func = functools.partial(make_single_host_config, config_name)
             config_map[f"{config_name}-single-host"] = make_single_host_config_func
+
+            # Make single-host configs for FP8
+            if f"{config_name}-fp8" in config_map:
+                make_single_host_fp8_config_func = functools.partial(
+                    make_single_host_config, f"{config_name}-fp8"
+                )
+                config_map[f"{config_name}-fp8-single-host"] = make_single_host_fp8_config_func
 
     return config_map

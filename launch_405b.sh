@@ -15,18 +15,6 @@ export TRAINER_DIR=gs://${PROJECT_ID}-axlearn
 export RESERVATION=${RESERVATION:-"cloudtpu-20240716121201-595617744"}
 
 
-# Only enable kueue when running on scale testing cluster
-# --queue=multislice-queue \
-# --priority_class=very-high \
-# --trainer_dir=gs://tess-checkpoints-us-west1/${JOBSET_NAME}-nr-${NUM_REPLICAS}/ \
-# For goodput logging
-#           --recorder_type=axlearn.cloud.gcp.measurement:goodput \
-#           --recorder_spec=name=goodput_${JOBSET_NAME} \
-#           --recorder_spec=upload_dir=${TRAINER_DIR}/summaries \
-#           --recorder_spec=upload_interval=30 \
-#           --recorder_spec=rolling_window_size=3600,7200,10800,86400 \
-#           --trace_at_steps=29,59,89,119,149,179,209,239,269,299,329,359,389,419,449,479,509,539,569,599,629,659,689,719
-
 axlearn gcp launch run --cluster=$GKE_CLUSTER \
       --runner_name gke_tpu_single \
       --queue=multislice-queue \

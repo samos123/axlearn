@@ -715,9 +715,10 @@ def get_trainer_kwargs(
                                             names_which_can_be_saved=(
                                                 RematRegexSavePatterns.QKV_PROJ.value
                                             ),
-                                            names_which_can_be_offloaded=(
-                                                RematRegexSavePatterns.INPUT.value
-                                            ),
+                                            # names_which_can_be_offloaded=(
+                                            #     RematRegexSavePatterns.INPUT.value
+                                            # ),
+                                            names_which_can_be_offloaded=None,
                                             offload_src="device",
                                             offload_dst="pinned_host",
                                         ),

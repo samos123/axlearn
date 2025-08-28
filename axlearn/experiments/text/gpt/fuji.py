@@ -1042,7 +1042,7 @@ def trainer_configs(
             ),
             **kwargs,
         )
-        config_map[config_name] = with_overrides(config_map[config_name], max_step=30)
+        config_map[config_name] = with_overrides(config_map[config_name], max_step=500)
 
         def make_fp8_config(base_config_name: str) -> SpmdTrainer.Config:
             """Make a FP8 variant of the base config.

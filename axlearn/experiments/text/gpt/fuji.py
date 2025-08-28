@@ -976,6 +976,9 @@ def model_config(
         input_linear=atten_input_linear,
         rotary_value=False,
     )
+    # Shard the 'num_heads' axis by the 'model' dim of the mesh and
+    # 'model_dim' by the 'fsdp' dim of the mesh.
+    atten_qkv_linear.input_linear.layer.param_partition_spec = ("fsdp", "model", None)
     atten_qkv_linear.rope_pos_emb_layer.theta = rope_theta
     attention_kv_cache = KVCache.default_config().set(cache_dtype=STEP_DTYPE)
 

@@ -54,6 +54,9 @@ def default_xla_options(
         xla_tpu_enable_latency_hiding_scheduler="true",  # Try to schedule ops efficiently.
         xla_tpu_perform_spmd_cse_prevention="false",
         # b/229655601: prevent OOM on gpt2-small-repeat.
+        # Flags to reduce HBM usage
+        # xla_latency_hiding_scheduler_rerun=2,
+        # xla_tpu_rwb_fusion="false",
     )
     if version == "v4":
         options.update(
@@ -182,7 +185,7 @@ def default_xla_options(
 
 
 def _apply_overrides_from_env(
-    options: dict[str, Union[str, bool, int]]
+    options: dict[str, Union[str, bool, int]],
 ) -> dict[str, Union[str, bool, int]]:
     """Apply environment variable overrides to XLA options.
 

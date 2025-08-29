@@ -58,11 +58,11 @@ def default_xla_options(
         # xla_latency_hiding_scheduler_rerun=2,
         # xla_tpu_rwb_fusion="false",
     )
-    if version == "v5p":
-        options.update(
-            # Solve on v5p Slow PjRt TPU operation detected
-            xla_tpu_enable_async_collective_fusion="false",
-        )
+    # if version == "v5p":
+    #     options.update(
+    #         # Solve on v5p Slow PjRt TPU operation detected
+    #         xla_tpu_enable_async_collective_fusion="false",
+    #     )
     if version == "v4":
         options.update(
             # Per maggioni@google.com, the following flags are not supported by V3.

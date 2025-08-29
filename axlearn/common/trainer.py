@@ -623,7 +623,7 @@ class SpmdTrainer(Module):
                         )
                         self.vlog(3, "Done step %s", self.step)
                         num_steps += 1
-                        if num_steps % 20 == 0:
+                        if num_steps % 1 == 0:
                             now = time.perf_counter()
                             average_step_time = (now - start_time) / num_steps
                             self._step_log("Average step time: %s seconds", average_step_time)
@@ -1335,6 +1335,7 @@ class SpmdTrainer(Module):
                 cfg.start_trace_process_indices == "all"
                 or jax.process_index() in cfg.start_trace_process_indices
             )
+            self._step_log(f"{should_start_tracing=}")
         if should_start_tracing:
             self._step_log("Start profiler tracing")
             jax.profiler.start_trace(self.summary_writer.config.dir)

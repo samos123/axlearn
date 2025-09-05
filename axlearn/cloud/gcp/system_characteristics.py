@@ -410,6 +410,46 @@ USER_FACING_NAME_TO_SYSTEM_CHARACTERISTICS = {
     "v6e-256": _SystemCharacteristics(
         "16x16", 64, "tpu-v6e-slice", "ct6e-standard-4t", 4, AcceleratorType["TPU"], "v6e-256"
     ),
+    # v7x system characteristics
+    "v7x-8": _SystemCharacteristics(
+        "2x2x1", 1, "tpu7x", "tpu7x-standard-4t", 4, AcceleratorType["TPU"], "v7x-8"
+    ),
+    "v7x-16": _SystemCharacteristics(
+        "2x2x2", 2, "tpu7x", "tpu7x-standard-4t", 4, AcceleratorType["TPU"], "v7x-16"
+    ),
+    "v7x-32": _SystemCharacteristics(
+        "2x2x4", 4, "tpu7x", "tpu7x-standard-4t", 4, AcceleratorType["TPU"], "v7x-32"
+    ),
+    "v7x-64": _SystemCharacteristics(
+        "2x4x4", 8, "tpu7x", "tpu7x-standard-4t", 4, AcceleratorType["TPU"], "v7x-64"
+    ),
+    "v7x-128": _SystemCharacteristics(
+        "4x4x4", 16, "tpu7x", "tpu7x-standard-4t", 4, AcceleratorType["TPU"], "v7x-128"
+    ),
+    "v7x-256": _SystemCharacteristics(
+        "4x4x8", 32, "tpu7x", "tpu7x-standard-4t", 4, AcceleratorType["TPU"], "v7x-256"
+    ),
+    "v7x-512": _SystemCharacteristics(
+        "4x8x8", 64, "tpu7x", "tpu7x-standard-4t", 4, AcceleratorType["TPU"], "v7x-512"
+    ),
+    "v7x-1024": _SystemCharacteristics(
+        "8x8x8", 128, "tpu7x", "tpu7x-standard-4t", 4, AcceleratorType["TPU"], "v7x-1024"
+    ),
+    "v7x-2048": _SystemCharacteristics(
+        "8x8x16", 256, "tpu7x", "tpu7x-standard-4t", 4, AcceleratorType["TPU"], "v7x-2048"
+    ),
+    "v7x-4096": _SystemCharacteristics(
+        "8x16x16", 512, "tpu7x", "tpu7x-standard-4t", 4, AcceleratorType["TPU"], "v7x-4096"
+    ),
+    "v7x-8192": _SystemCharacteristics(
+        "16x16x16",
+        1024,
+        "tpu7x",
+        "tpu7x-standard-4t",
+        4,
+        AcceleratorType["TPU"],
+        "v7x-8192",
+    ),
     # v4
     "v4-8": _SystemCharacteristics(
         "2x2x1", 1, "tpu-v4-podslice", "ct4p-hightpu-4t", 4, AcceleratorType["TPU"], "v4-8"

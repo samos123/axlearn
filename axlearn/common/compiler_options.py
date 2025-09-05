@@ -362,7 +362,7 @@ def infer_xsc_compiler_options(
 
 
 _TPU_VERSION_ALIASES = {"v5e": "v5litepod"}
-_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e")
+_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e", "v7x")
 
 
 def infer_xla_performance_flags(

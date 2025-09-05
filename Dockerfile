@@ -39,6 +39,7 @@ RUN pip install --upgrade pip && pip install uv flit && pip cache purge
 FROM base AS ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
+ENV UV_FIND_LINKS=https://storage.googleapis.com/axlearn-wheels/wheels.html
 RUN uv pip install .[core,audio,orbax,dev,gcp,vertexai_tensorboard,open_api] && uv cache clean
 COPY . .
 
@@ -58,6 +59,7 @@ FROM base AS bastion
 # TODO(markblee): Consider copying large directories separately, to cache more aggressively.
 # TODO(markblee): Is there a way to skip the "production" deps?
 COPY . /root/
+ENV UV_FIND_LINKS=https://storage.googleapis.com/axlearn-wheels/wheels.html
 RUN uv pip install .[core,gcp,vertexai_tensorboard] && uv cache clean
 
 ################################################################################
@@ -68,7 +70,7 @@ FROM base AS dataflow
 
 # Beam workers default to creating a new virtual environment on startup. Instead, we want them to
 # pickup the venv setup above. An alternative is to install into the global environment.
-ENV RUN_PYTHON_SDK_IN_DEFAULT_ENVIRONMENT=1
+ENV RUN_PYTHON_SDK_IN_DEFAULT_ENVIRONMENT=1 UV_FIND_LINKS=https://storage.googleapis.com/axlearn-wheels/wheels.html
 RUN uv pip install .[core,gcp,dataflow] && uv cache clean
 COPY . .
 
@@ -85,7 +87,7 @@ FROM base AS tpu
 
 ARG EXTRAS=
 
-ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
+ENV UV_FIND_LINKS="https://storage.googleapis.com/jax-releases/libtpu_releases.html,https://storage.googleapis.com/axlearn-wheels/wheels.html"
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
@@ -99,7 +101,7 @@ COPY . .
 FROM base AS gpu
 
 # TODO(markblee): Support extras.
-ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+ENV UV_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_cuda_releases.html,https://storage.googleapis.com/axlearn-wheels/wheels.html"
 # Enable the CUDA repository and install the required libraries (libnvrtc.so)
 RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb && \
     dpkg -i cuda-keyring_1.1-1_all.deb && \

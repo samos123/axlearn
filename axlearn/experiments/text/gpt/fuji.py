@@ -728,6 +728,33 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
+                (
+                    "tpu-v7x-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved=(
+                                                RematRegexSavePatterns.FLASH_ATTENTION.value
+                                            ),
+                                            names_which_can_be_offloaded=None,
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
                 # V2 on tpu-v6e-256x4, step time: 4.9s.
                 (
                     "tpu-v6e-256-(4|8)",

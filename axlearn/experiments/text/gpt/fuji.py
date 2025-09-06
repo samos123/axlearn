@@ -935,7 +935,7 @@ def get_trainer_kwargs(
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
     total_chips = len(jax.devices())
-    trainer_kwargs["train_batch_size"] = total_chips * 4
+    trainer_kwargs["train_batch_size"] = total_chips * 2
     model_kwargs = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
     if version == Version.V3_TIKTOKEN:  # tiktoken tokenizer

@@ -376,7 +376,7 @@ def get_trainer_kwargs(
         raise NotImplementedError(f"Unknown model size {model_size}.")
 
     total_devices = len(jax.devices())
-    trainer_kwargs["train_batch_size"] = total_devices
+    trainer_kwargs["train_batch_size"] = total_devices * 3
     merged_trainer_kwargs = common_trainer_kwargs()
     merged_trainer_kwargs.update(
         {k: v for k, v in trainer_kwargs.items() if k not in ("model_kwargs", "learner_kwargs")}

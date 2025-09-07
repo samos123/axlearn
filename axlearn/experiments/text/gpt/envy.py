@@ -25,6 +25,7 @@ Architecture names follow apple varieties: Fuji, Gala, etc.
 import functools
 from typing import Any, Literal, Sequence, Union
 
+import jax
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
@@ -329,6 +330,8 @@ def get_trainer_kwargs(
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
 
+    total_devices = len(jax.devices())
+    trainer_kwargs["train_batch_size"] = total_devices
     merged_trainer_kwargs = common_trainer_kwargs()
     merged_trainer_kwargs.update(
         {k: v for k, v in trainer_kwargs.items() if k not in ("model_kwargs", "learner_kwargs")}

@@ -929,6 +929,8 @@ def get_trainer_kwargs(
                             ),
                         ],
                     ),
+                ),
+                (
                     "tpu-v7x-.*",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[

@@ -70,7 +70,7 @@ def default_xla_options(
             xla_enable_async_all_gather="true",  # Allow async all-gather.
             xla_enable_async_collective_permute="true",  # Allow async collective permute.
         )
-    if version == "v6e":
+    if version in ("v6e", "v7x"):
         options.update(
             # Change to 16GB. The default is 4GB which is too small for larger models. This
             # cause the step time to be double. You should increase this

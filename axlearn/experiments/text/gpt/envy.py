@@ -32,6 +32,7 @@ from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
     FusedGroupedQKVLinear,
     GroupedQueryAttention,
+    RematRegexSavePatterns,
     RoFormerQKVLinear,
     ScaleKey,
     ScaleQuery,
@@ -48,7 +49,12 @@ from axlearn.common.trainer_config_modifier import (
     MeshShapeModifier,
     RematSpecModifier,
 )
-from axlearn.common.utils import HybridMeshShape, MeshShape, PartitionSpec
+from axlearn.common.utils import (
+    HybridMeshShape,
+    MeshShape,
+    PartitionSpec,
+    save_and_offload_only_these_names_regex,
+)
 from axlearn.experiments.text.gpt.common import (
     MESH_AXIS_NAMES,
     SourceBuilder,
@@ -266,7 +272,28 @@ def get_trainer_kwargs(
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=2, expert=16)
+                                mesh_shape=mesh_shape_from_axes(data=-1, expert=16)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=config.config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            # names_which_can_be_saved=(
+                                            #     RematRegexSavePatterns.QKV_PROJ.value
+                                            # ),
+                                            names_which_can_be_saved=None,
+                                            # names_which_can_be_offloaded=None,
+                                            names_which_can_be_offloaded=(
+                                                RematRegexSavePatterns.INPUT.value
+                                            ),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
                             ),
                             # RematSpecModifier.default_config().set(
                             #     remat_policies={

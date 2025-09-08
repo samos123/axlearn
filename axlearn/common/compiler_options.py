@@ -70,7 +70,7 @@ def default_xla_options(
             xla_enable_async_all_gather="true",  # Allow async all-gather.
             xla_enable_async_collective_permute="true",  # Allow async collective permute.
         )
-    if version in ("v6e", "v7x"):
+    if version == "v6e":
         options.update(
             # Change to 16GB. The default is 4GB which is too small for larger models. This
             # cause the step time to be double. You should increase this
@@ -149,6 +149,22 @@ def default_xla_options(
             xla_tpu_use_enhanced_launch_barrier="true",
             # TODO(kelvinzou): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
+        )
+
+    if version == "v7x":
+        # Improvements for v7x
+        options.update(
+            xla_tpu_dvfs_p_state=7,
+            xla_tpu_scoped_vmem_limit_kib=65536,
+            xla_tpu_enable_sparse_core_reduce_scatter_v2="true",
+            xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
+            xla_tpu_enable_sparse_core_collective_offload_2d_all_gather="true",
+            xla_tpu_enable_all_gather_offload_tracing="true",
+            xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
+            xla_enable_async_all_gather="true",
+            xla_tpu_prefer_async_allgather_to_allreduce="true",
+            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.

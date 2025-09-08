@@ -281,14 +281,17 @@ def get_trainer_kwargs(
                                         policy=config.config_for_function(
                                             save_and_offload_only_these_names_regex
                                         ).set(
-                                            names_which_can_be_saved=(
-                                                RematRegexSavePatterns.FLASH_ATTENTION.value
+                                            names_which_can_be_saved="|".join(
+                                                [
+                                                    RematRegexSavePatterns.FLASH_ATTENTION.value,
+                                                    RematRegexSavePatterns.FEED_FORWARD.value,
+                                                ]
                                             ),
                                             # names_which_can_be_saved=None,
-                                            names_which_can_be_offloaded=None,
-                                            # names_which_can_be_offloaded=(
-                                            #     RematRegexSavePatterns.INPUT.value
-                                            # ),
+                                            # names_which_can_be_offloaded=None,
+                                            names_which_can_be_offloaded=(
+                                                RematRegexSavePatterns.INPUT.value
+                                            ),
                                             offload_src="device",
                                             offload_dst="pinned_host",
                                         ),

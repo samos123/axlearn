@@ -288,10 +288,10 @@ def get_trainer_kwargs(
                                                 ]
                                             ),
                                             # names_which_can_be_saved=None,
-                                            # names_which_can_be_offloaded=None,
-                                            names_which_can_be_offloaded=(
-                                                RematRegexSavePatterns.INPUT.value
-                                            ),
+                                            names_which_can_be_offloaded=None,
+                                            # names_which_can_be_offloaded=(
+                                            #     RematRegexSavePatterns.INPUT.value
+                                            # ),
                                             offload_src="device",
                                             offload_dst="pinned_host",
                                         ),

@@ -165,6 +165,7 @@ def default_xla_options(
             xla_tpu_prefer_async_allgather_to_allreduce="true",
             xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
             xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
+            xla_all_gather_latency_bound_threshold_in_bytes="16777216",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.

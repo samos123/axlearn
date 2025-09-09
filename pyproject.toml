@@ -37,7 +37,7 @@ core = [
     "tensorflow==2.19.0.1",
     "tensorflow-datasets>=4.9.2",
     "tensorflow-io>=0.37.2",  # for tensorflow-2.16. Note that 0.37.0 results in "pure virtual method called".
-    "tensorflow-metadata==1.17.2", # Otherwise Seqio will report no core for tfds
+    "tensorflow-metadata>=1.0.0", # Otherwise Seqio will report no core for tfds
     "tensorflow_text==2.19.0", # implied by seqio, but also used directly for text processing
     "tensorstore>=0.1.63",  # used for supporting GDA checkpoints
     "toml",  # for config management

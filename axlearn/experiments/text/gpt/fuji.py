@@ -735,6 +735,7 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(fsdp=-1)
                             ),
+                            FlashBlockSizeModifier.default_config().set(tpu_block_size=2048),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
@@ -940,6 +941,7 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(fsdp=-1)
                             ),
+                            FlashBlockSizeModifier.default_config().set(tpu_block_size=2048),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(

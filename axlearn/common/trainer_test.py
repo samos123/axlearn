@@ -537,6 +537,7 @@ class TrainerTest(test_utils.TestCase):
                     # AOT compilation path. We now expect the cache hits to be 0
                     if jax.__version__ >= "0.6.0":
                         pytest.skip(
+                            # pylint: disable-next=line-too-long
                             "AOT compilation path is not affected by 'enable_python_cache' with Jax >= 0.6.0"
                         )
                     # We expect to have hit the lowering cache on all but one step.
@@ -552,6 +553,7 @@ class TrainerTest(test_utils.TestCase):
                 if not enable_python_cache:
                     if jax.__version__ >= "0.6.0":
                         pytest.skip(
+                            # pylint: disable-next=line-too-long
                             "AOT compilation path is not affected by 'enable_python_cache' with Jax >= 0.6.0"
                         )
                     self.assertEqual(end_cache_hits - start_cache_hits, cfg.max_step - 1)

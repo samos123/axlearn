@@ -165,7 +165,16 @@ def default_xla_options(
             xla_tpu_prefer_async_allgather_to_allreduce="true",
             xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
             xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
-            xla_all_gather_latency_bound_threshold_in_bytes="16777216",
+            # Sam trying out XLA perf flags, remove later
+            # Below flags did not help
+            # xla_all_gather_latency_bound_threshold_in_bytes="16777216",
+            # xla_all_reduce_latency_bound_threshold_in_bytes="16777216",
+            # xla_collective_permute_latency_bound_threshold_in_bytes="16777216",
+            # xla_tpu_data_parallel_opt_different_sized_ops="true",
+            # Pipelining
+            # xla_should_allow_loop_variant_parameter_in_chain="true",
+            # xla_should_add_loop_invariant_op_in_chain="true",
+            # xla_tpu_enable_ici_ag_pipelining="true",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.

@@ -172,9 +172,9 @@ def default_xla_options(
             # xla_collective_permute_latency_bound_threshold_in_bytes="16777216",
             # xla_tpu_data_parallel_opt_different_sized_ops="true",
             # Pipelining
-            # xla_should_allow_loop_variant_parameter_in_chain="true",
-            # xla_should_add_loop_invariant_op_in_chain="true",
-            # xla_tpu_enable_ici_ag_pipelining="true",
+            xla_should_allow_loop_variant_parameter_in_chain="true",
+            xla_should_add_loop_invariant_op_in_chain="true",
+            xla_tpu_enable_ici_ag_pipelining="true",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.

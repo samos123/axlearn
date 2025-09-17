@@ -12,7 +12,7 @@ from jax.sharding import SingleDeviceSharding
 
 
 async def benchmark_host_to_device_throughput(
-    device_put_buffer_mb: int = 512, num_transfers: int = 10
+    device_put_buffer_mb: int = 512, num_transfers: int = 5
 ):
     """Benchmarks JAX device_put throughput from CPU host to a v5e-32 TPU slice."""
     print(f"JAX version: {jax.__version__}")
@@ -36,11 +36,11 @@ async def benchmark_host_to_device_throughput(
     transfer_times = []
 
     print(f"Starting benchmark ({num_transfers} transfers)...")
+    uid = uuid.uuid4()
+    trace_dir = f"gs://cloud-tpu-multipod-dev-axlearn/{uid}"
+    jax.profiler.start_trace(f"{trace_dir}/{device_put_buffer_mb}mb")
+
     for i in range(num_transfers):
-        uid = uuid.uuid4()
-        if i == 0:
-            trace_dir = f"gs://cloud-tpu-multipod-dev-axlearn/{uid}"
-            jax.profiler.start_trace(f"{trace_dir}/{device_put_buffer_mb}mb")
 
         start_time = time.perf_counter()
 
@@ -61,11 +61,10 @@ async def benchmark_host_to_device_throughput(
         transfer_times.append(duration)
         print(f"Transfer {i+1}/{num_transfers}: {duration:.4f} seconds")
 
-        if i == 0:
-            jax.profiler.stop_trace()
-
         # Optional: hint for early deletion.
         del device_arrays
+
+    jax.profiler.stop_trace()
 
     avg_time = np.mean(transfer_times)
     print(f"\nAverage time per parallel device_put batch: {avg_time:.4f} seconds")
@@ -84,7 +83,7 @@ if __name__ == "__main__":
         pathwaysutils.initialize()
     else:
         jax.distributed.initialize()
-    scenarios_mb = [1, 128, 1024, 2048]
+    scenarios_mb = [1, 128, 512, 1024]
     for scenario in scenarios_mb:
         print(f"Running scenario {scenario}MB")
         asyncio.run(benchmark_host_to_device_throughput(scenario))

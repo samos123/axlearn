@@ -168,7 +168,10 @@ class QuantizedDotGeneral(BaseQuantizedEinsum):
         elif cfg.quantization_type == DotGeneralQuantizationType.FP_8:
             # TODO(jiarui): Is there a way to identify if we are running on H100?
             if jax.default_backend() != "gpu":
-                raise NotImplementedError("Fp8 quantization is only available on H100 GPU")
+                if jax.default_backend() == "tpu":
+                    logging.info("Using experimental FP8 support on v7x TPU")
+                else:
+                    raise NotImplementedError("Fp8 quantization is only available on H100 GPU")
         elif cfg.quantization_type is not None:
             raise KeyError(
                 f"Unrecognized quantization type {cfg.quantization_type}. "

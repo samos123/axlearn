@@ -18,7 +18,7 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update -y -qq && \
     apt-get install -y -qq apt-transport-https ca-certificates gcc g++ \
-    git screen ca-certificates google-perftools google-cloud-cli python3.10-venv && \
+    git screen ca-certificates google-perftools google-cloud-cli python3.12-venv && \
     apt clean -y -qq
 
 # Setup.
@@ -94,8 +94,10 @@ ARG EXTRAS=
 
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
-RUN uv pip install -qq --prerelease=allow .[core,tpu] && uv cache clean
+RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install -qq .[$EXTRAS] && uv cache clean; fi
+COPY --from=libtpu-target:latest /wheels /wheels
+RUN uv pip install --no-deps /wheels/*.whl && uv cache clean
 COPY . .
 
 ################################################################################
@@ -110,7 +112,7 @@ RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/com
     dpkg -i cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y cuda-libraries-dev-12-8 ibverbs-utils && \
     apt clean -y
-RUN uv pip install -qq .[core,gpu] && uv cache clean
+RUN uv pip install --prerelease=allow .[core,gpu] && uv cache clean
 COPY . .
 
 ################################################################################

@@ -210,7 +210,7 @@ def main(argv: Sequence[str], *, namespace: str = CONFIG_NAMESPACE, fv: flags.Fl
                 try:
                     utils.subprocess_run(
                         "gcloud container clusters get-credentials "
-                        f"{cluster} --region {region} --project {project}"
+                        f"{cluster} --location {zone} --project {project}"
                     )
                 except subprocess.CalledProcessError:
                     logging.warning("Failed to switch cluster contexts.")

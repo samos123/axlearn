@@ -15,6 +15,7 @@ import functools
 import itertools
 from typing import Any, List, NamedTuple, Optional, Union
 
+import jax
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
@@ -32,7 +33,7 @@ from axlearn.common.attention import (
     StackedTransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
-from axlearn.common.config import TrainerConfigFn, config_for_function
+from axlearn.common.config import TrainerConfigFn, config_for_function, with_overrides
 from axlearn.common.decoder import LmHead
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
@@ -67,7 +68,7 @@ from axlearn.experiments.text.gpt.common import model_config as common_model_con
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
 from axlearn.experiments.trainer_config_utils import V6eFlashConfigModifier
 
-MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B")
+MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B", "405B")
 
 
 class Version(enum.Enum):
@@ -120,6 +121,7 @@ TOTAL_TOKENS = {
         "3B": 15 * (1024**4),  # 15T tokens
         "7B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
+        "405B": 15 * (1024**4),  # 15T tokens
     },
     Version.V3_TIKTOKEN: {
         "test": 15 * (1024**4),  # 15T tokens
@@ -127,47 +129,35 @@ TOTAL_TOKENS = {
         "3B": 15 * (1024**4),  # 15T tokens
         "8B": 15 * (1024**4),  # 15T tokens
         "70B": 15 * (1024**4),  # 15T tokens
+        "405B": 15 * (1024**4),  # 15T tokens
     },
 }
 
 
-def offload_dots_saveable_policy(*_, **__):
+def offload_dots_saveable_policy(prim, *args, **kwargs):
     """A rematerialization policy function used in RematSpec to offload dot_general_p
     operations from device to pinned host memory.
-
-    Args:
-        *_: Ignored positional arguments.
-        **__: Ignored keyword arguments.
-
-    Returns:
-        A policy function that offloads dot_general_p from device to pinned host
-    memory.
     """
-    return config_for_function(extended_checkpoint_policies.offload_dots_saveable).set(
-        offload_src="device", offload_dst="pinned_host"
+    return (
+        config_for_function(extended_checkpoint_policies.offload_dots_saveable)
+        .set(offload_src="device", offload_dst="pinned_host")
+        .instantiate()(prim, *args, **kwargs)
     )
 
 
-def offload_attention_proj_policy(*_, **__):
+def offload_attention_proj_policy(prim, *args, **kwargs):
     """A rematerialization policy function used in RematSpec to offload attention
     projection intermediates during model execution.
-
-    Args:
-        *_: Ignored positional arguments.
-        **__: Ignored keyword arguments.
-
-    Returns:
-        A checkpoint policy function that offloads native attention projection intermediates
-        from device to pinned host memory, enabling memory-efficient training with checkpoint
-        support.
     """
-    return config_for_function(
-        extended_checkpoint_policies.save_and_offload_only_these_names_regex
-    ).set(
-        names_which_can_be_saved=None,
-        names_which_can_be_offloaded=RematRegexSavePatterns.NATIVE_ATTENTION.value,
-        offload_src="device",
-        offload_dst="pinned_host",
+    return (
+        config_for_function(extended_checkpoint_policies.save_and_offload_only_these_names_regex)
+        .set(
+            names_which_can_be_saved=None,
+            names_which_can_be_offloaded=RematRegexSavePatterns.NATIVE_ATTENTION.value,
+            offload_src="device",
+            offload_dst="pinned_host",
+        )
+        .instantiate()(prim, *args, **kwargs)
     )
 
 
@@ -663,15 +653,244 @@ def get_trainer_kwargs(
             ),
         )
     elif model_size == "70B":
+        trainer_kwargs = (
+            dict(
+                model_kwargs=dict(
+                    num_layers=80,
+                    hidden_dim=128 * 64,
+                    num_heads=64,
+                    # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
+                    num_kv_heads=None if version == Version.V1 else 8,
+                    # TODO(kelvin-zou): Remove the perf numbers for V5e (OOM).
+                    ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
+                    rope_theta=rope_theta,
+                    shared_lm_head=False,
+                    flash_attention=flash_attention,
+                ),
+                learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
+                max_sequence_length=max_sequence_length,
+                train_batch_size=train_batch_size,
+                max_step=max_step,
+                mesh_shape=mesh_shape_from_axes(fsdp=-1),
+                mesh_rules=(
+                    # TPU V5e maximum per device batch is 1.
+                    # with all activation offloading, HBM usage: 14.6GB/chip.
+                    # TODO(kelvin-zou): Fix the env issue for internal use cases.
+                    # tpu-v5e-256-4. step time: 14.3736s (59.87% MFU).
+                    (
+                        "tpu-v5litepod-256-4",
+                        ChainConfigModifier.default_config().set(
+                            config_modifiers=[
+                                MeshShapeModifier.default_config().set(
+                                    mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                                ),
+                                RematSpecModifier.default_config().set(
+                                    remat_policies={
+                                        "model.decoder.transformer.layer": RematSpec(
+                                            prevent_cse=False,
+                                            policy=offload_dots_saveable_policy,
+                                        ),
+                                    }
+                                ),
+                            ],
+                        ),
+                    ),
+                    (
+                        "tpu-v5p-.*",
+                        ChainConfigModifier.default_config().set(
+                            config_modifiers=[
+                                MeshShapeModifier.default_config().set(
+                                    mesh_shape=mesh_shape_from_axes(fsdp=-1)
+                                ),
+                                RematSpecModifier.default_config().set(
+                                    remat_policies={
+                                        "model.decoder.transformer.layer": RematSpec(
+                                            prevent_cse=False,
+                                            policy=config_for_function(
+                                                save_and_offload_only_these_names_regex
+                                            ).set(
+                                                names_which_can_be_saved=(
+                                                    RematRegexSavePatterns.QKV_PROJ.value
+                                                ),
+                                                # names_which_can_be_offloaded=(
+                                                #     RematRegexSavePatterns.INPUT.value
+                                                # ),
+                                                names_which_can_be_offloaded=None,
+                                                offload_src="device",
+                                                offload_dst="pinned_host",
+                                            ),
+                                        ),
+                                    }
+                                ),
+                            ],
+                        ),
+                    ),
+                    (
+                        "tpu-v7x-.*",
+                        ChainConfigModifier.default_config().set(
+                            config_modifiers=[
+                                MeshShapeModifier.default_config().set(
+                                    mesh_shape=mesh_shape_from_axes(fsdp=-1)
+                                ),
+                                FlashBlockSizeModifier.default_config().set(tpu_block_size=2048),
+                                RematSpecModifier.default_config().set(
+                                    remat_policies={
+                                        "model.decoder.transformer.layer": RematSpec(
+                                            prevent_cse=False,
+                                            policy=config_for_function(
+                                                save_and_offload_only_these_names_regex
+                                            ).set(
+                                                names_which_can_be_saved="|".join(
+                                                    [
+                                                        RematRegexSavePatterns.FLASH_ATTENTION.value,
+                                                        RematRegexSavePatterns.CONTEXT.value,
+                                                    ]
+                                                ),
+                                                names_which_can_be_offloaded=None,
+                                                offload_src="device",
+                                                offload_dst="pinned_host",
+                                            ),
+                                        ),
+                                    }
+                                ),
+                            ],
+                        ),
+                    ),
+                    # V2 on tpu-v6e-256x4, step time: 4.9s.
+                    (
+                        "tpu-v6e-256-(4|8)",
+                        ChainConfigModifier.default_config().set(
+                            config_modifiers=[
+                                MeshShapeModifier.default_config().set(
+                                    mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                                ),
+                                RematSpecModifier.default_config().set(
+                                    remat_policies={
+                                        "model.decoder.transformer.layer": RematSpec(
+                                            prevent_cse=False,
+                                            policy=config_for_function(
+                                                save_and_offload_only_these_names_regex
+                                            ).set(
+                                                names_which_can_be_saved=None,
+                                                names_which_can_be_offloaded="|".join(
+                                                    [
+                                                        RematRegexSavePatterns.QKV_PROJ.value,
+                                                        RematRegexSavePatterns.INPUT.value,
+                                                    ]
+                                                ),
+                                                offload_src="device",
+                                                offload_dst="pinned_host",
+                                            ),
+                                        ),
+                                    }
+                                ),
+                                # RematSpecModifier.default_config().set(
+                                #     remat_policies={
+                                #         "model.decoder.transformer.layer": RematSpec(
+                                #             prevent_cse=False,
+                                #             policy=offload_attention_proj_policy,
+                                #         ),
+                                #     }
+                                # ),
+                                V6eFlashConfigModifier.default_config(),
+                            ],
+                        ),
+                    ),
+                    # V2 on tpu-v6e-256, step time: 19.5s.
+                    (
+                        "tpu-v6e-256",
+                        ChainConfigModifier.default_config().set(
+                            config_modifiers=[
+                                MeshShapeModifier.default_config().set(
+                                    mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                                ),
+                                RematSpecModifier.default_config().set(
+                                    remat_policies={
+                                        "model.decoder.transformer.layer": RematSpec(
+                                            prevent_cse=False,
+                                            policy=offload_attention_proj_policy,
+                                        ),
+                                    }
+                                ),
+                                V6eFlashConfigModifier.default_config(),
+                                GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
+                            ],
+                        ),
+                    ),
+                    # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
+                    # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
+                    (
+                        "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
+                        mesh_shape_from_axes(data=-1, fsdp=128),
+                    ),
+                    (
+                        "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g)-(256|512|1024)",
+                        ChainConfigModifier.default_config().set(
+                            config_modifiers=[
+                                MeshShapeModifier.default_config().set(
+                                    mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
+                                ),
+                            ],
+                        ),
+                    ),
+                    (
+                        "gpu-(a4-highgpu-8g)-(256|512|1024)",
+                        ChainConfigModifier.default_config().set(
+                            config_modifiers=[
+                                MeshShapeModifier.default_config().set(
+                                    mesh_shape=mesh_shape_from_axes(data=-1, fsdp=16)
+                                ),
+                                # Modify the GPU block-size for B200 platform (Pallas kernels)
+                                FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
+                            ],
+                        ),
+                    ),
+                    (
+                        "neuron-(trn2|trn2n).48xlarge-64",
+                        ChainConfigModifier.default_config().set(
+                            config_modifiers=[
+                                MeshShapeModifier.default_config().set(
+                                    # TP within the chip, FSDP across chips.
+                                    # Each TRN2 chip has 4 XLA cores.
+                                    mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
+                                ),
+                                RematSpecModifier.default_config().set(
+                                    remat_policies={
+                                        "model.decoder.transformer.layer": RematSpec(
+                                            prevent_cse=True,
+                                            policy=config_for_function(
+                                                save_and_offload_only_these_names_regex
+                                            ).set(
+                                                names_which_can_be_saved="|".join(
+                                                    [
+                                                        RematRegexSavePatterns.QKV_PROJ.value,
+                                                        RematRegexSavePatterns.LINEAR1_X.value,
+                                                    ]
+                                                ),
+                                                names_which_can_be_offloaded=None,
+                                                offload_src=None,
+                                                offload_dst=None,
+                                            ),
+                                        ),
+                                    }
+                                ),
+                                *trn2_config.module_modifications,
+                                *trn2_config.partition_spec_modifications,
+                            ],
+                        ),
+                    ),
+                ),
+            ),
+        )
+    elif model_size == "405B":
         trainer_kwargs = dict(
             model_kwargs=dict(
-                num_layers=80,
-                hidden_dim=128 * 64,
-                num_heads=64,
+                num_layers=126,
+                hidden_dim=16384,
+                ffn_dim=53248,
+                num_heads=128,
                 # No GQA support in V1 models, so num_kv_heads is the same as num_heads.
                 num_kv_heads=None if version == Version.V1 else 8,
-                # TODO(kelvin-zou): Remove the perf numbers for V5e (OOM).
-                ffn_dim=scaled_hidden_dim(scale=3.5, round_up_to_multiples_of=256),
                 rope_theta=rope_theta,
                 shared_lm_head=False,
                 flash_attention=flash_attention,
@@ -682,28 +901,6 @@ def get_trainer_kwargs(
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
-                # TPU V5e maximum per device batch is 1.
-                # with all activation offloading, HBM usage: 14.6GB/chip.
-                # TODO(kelvin-zou): Fix the env issue for internal use cases.
-                # tpu-v5e-256-4. step time: 14.3736s (59.87% MFU).
-                (
-                    "tpu-v5litepod-256-4",
-                    ChainConfigModifier.default_config().set(
-                        config_modifiers=[
-                            MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
-                            ),
-                            RematSpecModifier.default_config().set(
-                                remat_policies={
-                                    "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=False,
-                                        policy=offload_dots_saveable_policy,
-                                    ),
-                                }
-                            ),
-                        ],
-                    ),
-                ),
                 (
                     "tpu-v5p-.*",
                     ChainConfigModifier.default_config().set(
@@ -718,13 +915,14 @@ def get_trainer_kwargs(
                                         policy=config_for_function(
                                             save_and_offload_only_these_names_regex
                                         ).set(
-                                            names_which_can_be_saved="|".join(
-                                                [
-                                                    RematRegexSavePatterns.FLASH_ATTENTION.value,
-                                                    ".*linear1_0",
-                                                ]
-                                            ),
+                                            # names_which_can_be_saved=(
+                                            #     RematRegexSavePatterns.QKV_PROJ.value
+                                            # ),
+                                            names_which_can_be_saved=None,
                                             names_which_can_be_offloaded=None,
+                                            # names_which_can_be_offloaded=(
+                                            #     RematRegexSavePatterns.INPUT.value
+                                            # ),
                                             offload_src="device",
                                             offload_dst="pinned_host",
                                         ),
@@ -734,106 +932,35 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
-                # V2 on tpu-v6e-256x4, step time: 4.9s.
                 (
-                    "tpu-v6e-256-(4|8)",
+                    "tpu-v7x-.*",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
+                                mesh_shape=mesh_shape_from_axes(fsdp=-1)
                             ),
+                            FlashBlockSizeModifier.default_config().set(tpu_block_size=2048),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
                                         prevent_cse=False,
-                                        policy=offload_attention_proj_policy,
-                                    ),
-                                }
-                            ),
-                            V6eFlashConfigModifier.default_config(),
-                        ],
-                    ),
-                ),
-                # V2 on tpu-v6e-256, step time: 19.5s.
-                (
-                    "tpu-v6e-256",
-                    ChainConfigModifier.default_config().set(
-                        config_modifiers=[
-                            MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=256)
-                            ),
-                            RematSpecModifier.default_config().set(
-                                remat_policies={
-                                    "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=False,
-                                        policy=offload_attention_proj_policy,
-                                    ),
-                                }
-                            ),
-                            V6eFlashConfigModifier.default_config(),
-                            GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
-                        ],
-                    ),
-                ),
-                # H100/A100 80G. Maximum per-node batch size = 16, hence need >= 64 nodes.
-                # v2 on gpu-p5.48xlarge 8x64, step time: 12.9s.
-                (
-                    "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
-                    mesh_shape_from_axes(data=-1, fsdp=128),
-                ),
-                (
-                    "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g)-(256|512|1024)",
-                    ChainConfigModifier.default_config().set(
-                        config_modifiers=[
-                            MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=64)
-                            ),
-                        ],
-                    ),
-                ),
-                (
-                    "gpu-(a4-highgpu-8g)-(256|512|1024)",
-                    ChainConfigModifier.default_config().set(
-                        config_modifiers=[
-                            MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=16)
-                            ),
-                            # Modify the GPU block-size for B200 platform (Pallas kernels)
-                            FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
-                        ],
-                    ),
-                ),
-                (
-                    "neuron-(trn2|trn2n).48xlarge-64",
-                    ChainConfigModifier.default_config().set(
-                        config_modifiers=[
-                            MeshShapeModifier.default_config().set(
-                                # TP within the chip, FSDP across chips.
-                                # Each TRN2 chip has 4 XLA cores.
-                                mesh_shape=mesh_shape_from_axes(fsdp=-1, model=4)
-                            ),
-                            RematSpecModifier.default_config().set(
-                                remat_policies={
-                                    "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=True,
                                         policy=config_for_function(
                                             save_and_offload_only_these_names_regex
                                         ).set(
-                                            names_which_can_be_saved="|".join(
-                                                [
-                                                    RematRegexSavePatterns.QKV_PROJ.value,
-                                                    RematRegexSavePatterns.LINEAR1_X.value,
-                                                ]
+                                            # names_which_can_be_saved=(
+                                            #     RematRegexSavePatterns.QKV_PROJ.value
+                                            # ),
+                                            names_which_can_be_saved=None,
+                                            # names_which_can_be_offloaded=None,
+                                            names_which_can_be_offloaded=(
+                                                RematRegexSavePatterns.INPUT.value
                                             ),
-                                            names_which_can_be_offloaded=None,
-                                            offload_src=None,
-                                            offload_dst=None,
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
                                         ),
                                     ),
                                 }
                             ),
-                            *trn2_config.module_modifications,
-                            *trn2_config.partition_spec_modifications,
                         ],
                     ),
                 ),
@@ -841,6 +968,8 @@ def get_trainer_kwargs(
         )
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
+    total_chips = len(jax.devices())
+    trainer_kwargs["train_batch_size"] = total_chips
     model_kwargs = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
     if version == Version.V3_TIKTOKEN:  # tiktoken tokenizer
@@ -909,6 +1038,9 @@ def model_config(
         input_linear=atten_input_linear,
         rotary_value=False,
     )
+    # Shard the 'num_heads' axis by the 'model' dim of the mesh and
+    # 'model_dim' by the 'fsdp' dim of the mesh.
+    atten_qkv_linear.input_linear.layer.param_partition_spec = ("fsdp", "model", None)
     atten_qkv_linear.rope_pos_emb_layer.theta = rope_theta
     attention_kv_cache = KVCache.default_config().set(cache_dtype=STEP_DTYPE)
 
@@ -971,6 +1103,7 @@ def trainer_configs(
             ),
             **kwargs,
         )
+        config_map[config_name] = with_overrides(config_map[config_name], max_step=500)
 
         def make_fp8_config(base_config_name: str) -> SpmdTrainer.Config:
             """Make a FP8 variant of the base config.

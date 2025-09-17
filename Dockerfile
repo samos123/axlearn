@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG TARGET=base
-ARG BASE_IMAGE=ubuntu:22.04
+ARG BASE_IMAGE=ubuntu:24.04
 
 FROM ${BASE_IMAGE} AS base
 
@@ -15,7 +15,7 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update -y && \
     apt-get install -y apt-transport-https ca-certificates gcc g++ \
-      git screen ca-certificates google-perftools google-cloud-cli python3.10-venv && apt clean -y
+      git screen ca-certificates google-perftools google-cloud-cli python3.12-venv && apt clean -y
 
 # Setup.
 RUN mkdir -p /root
@@ -26,7 +26,7 @@ COPY pyproject.toml pyproject.toml
 RUN mkdir axlearn && touch axlearn/__init__.py
 # Setup venv to suppress pip warnings.
 ENV VIRTUAL_ENV=/opt/venv
-RUN python3 -m venv $VIRTUAL_ENV
+RUN python3.12 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
 RUN pip install --upgrade pip && pip install uv flit && pip cache purge
@@ -74,7 +74,7 @@ COPY . .
 
 # Dataflow workers can't start properly if the entrypoint is not set
 # See: https://cloud.google.com/dataflow/docs/guides/build-container-image#use_a_custom_base_image
-COPY --from=apache/beam_python3.10_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
+COPY --from=apache/beam_python3.12_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
 ENTRYPOINT ["/opt/apache/beam/boot"]
 
 ################################################################################
@@ -89,6 +89,8 @@ ARG EXTRAS=
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
+COPY --from=libtpu-target:latest /wheels /wheels
+RUN uv pip install --no-deps /wheels/*.whl && uv cache clean
 COPY . .
 
 ################################################################################
@@ -99,7 +101,7 @@ FROM base AS gpu
 
 # TODO(markblee): Support extras.
 # Enable the CUDA repository and install the required libraries (libnvrtc.so)
-RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb && \
+RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb && \
     dpkg -i cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y cuda-libraries-dev-12-8 ibverbs-utils && \
     apt clean -y

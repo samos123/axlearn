@@ -54,7 +54,15 @@ def default_xla_options(
         xla_tpu_enable_latency_hiding_scheduler="true",  # Try to schedule ops efficiently.
         xla_tpu_perform_spmd_cse_prevention="false",
         # b/229655601: prevent OOM on gpt2-small-repeat.
+        # Flags to reduce HBM usage
+        # xla_latency_hiding_scheduler_rerun=2,
+        # xla_tpu_rwb_fusion="false",
     )
+    # if version == "v5p":
+    #     options.update(
+    #         # Solve on v5p Slow PjRt TPU operation detected
+    #         xla_tpu_enable_async_collective_fusion="false",
+    #     )
     if version == "v4":
         options.update(
             # Per maggioni@google.com, the following flags are not supported by V3.
@@ -142,6 +150,32 @@ def default_xla_options(
             # TODO(kelvinzou): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
         )
+
+    if version == "v7x":
+        # Improvements for v7x
+        options.update(
+            xla_tpu_dvfs_p_state=7,
+            xla_tpu_scoped_vmem_limit_kib=65536,
+            xla_tpu_enable_sparse_core_reduce_scatter_v2="true",
+            xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
+            xla_tpu_enable_sparse_core_collective_offload_2d_all_gather="true",
+            xla_tpu_enable_all_gather_offload_tracing="true",
+            xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
+            xla_enable_async_all_gather="true",
+            xla_tpu_prefer_async_allgather_to_allreduce="true",
+            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
+            # Sam trying out XLA perf flags, remove later
+            # Below flags did not help
+            # xla_all_gather_latency_bound_threshold_in_bytes="16777216",
+            # xla_all_reduce_latency_bound_threshold_in_bytes="16777216",
+            # xla_collective_permute_latency_bound_threshold_in_bytes="16777216",
+            # xla_tpu_data_parallel_opt_different_sized_ops="true",
+            # Pipelining
+            xla_should_allow_loop_variant_parameter_in_chain="true",
+            xla_should_add_loop_invariant_op_in_chain="true",
+            xla_tpu_enable_ici_ag_pipelining="true",
+        )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
         options.update(
@@ -182,7 +216,7 @@ def default_xla_options(
 
 
 def _apply_overrides_from_env(
-    options: dict[str, Union[str, bool, int]]
+    options: dict[str, Union[str, bool, int]],
 ) -> dict[str, Union[str, bool, int]]:
     """Apply environment variable overrides to XLA options.
 
@@ -357,7 +391,7 @@ def infer_xsc_compiler_options(
 
 
 _TPU_VERSION_ALIASES = {"v5e": "v5litepod"}
-_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e")
+_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e", "v7x")
 
 
 def infer_xla_performance_flags(

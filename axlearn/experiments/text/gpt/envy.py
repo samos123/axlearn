@@ -25,12 +25,14 @@ Architecture names follow apple varieties: Fuji, Gala, etc.
 import functools
 from typing import Any, Literal, Sequence, Union
 
+import jax
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
 from axlearn.common.attention import (
     FusedGroupedQKVLinear,
     GroupedQueryAttention,
+    RematRegexSavePatterns,
     RoFormerQKVLinear,
     ScaleKey,
     ScaleQuery,
@@ -48,7 +50,12 @@ from axlearn.common.trainer_config_modifier import (
     MeshShapeModifier,
     RematSpecModifier,
 )
-from axlearn.common.utils import HybridMeshShape, MeshShape, PartitionSpec
+from axlearn.common.utils import (
+    HybridMeshShape,
+    MeshShape,
+    PartitionSpec,
+    save_and_offload_only_these_names_regex,
+)
 from axlearn.experiments.text.gpt.common import (
     MESH_AXIS_NAMES,
     SourceBuilder,
@@ -261,6 +268,48 @@ def get_trainer_kwargs(
                     ),
                 ),
                 (
+                    "tpu-v7x-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, expert=16)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=True,
+                                        policy=config.config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
+                                            names_which_can_be_saved="|".join(
+                                                [
+                                                    RematRegexSavePatterns.FLASH_ATTENTION.value,
+                                                    RematRegexSavePatterns.FEED_FORWARD.value,
+                                                ]
+                                            ),
+                                            # names_which_can_be_saved=None,
+                                            names_which_can_be_offloaded=None,
+                                            # names_which_can_be_offloaded=(
+                                            #     RematRegexSavePatterns.INPUT.value
+                                            # ),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
+                            ),
+                            # RematSpecModifier.default_config().set(
+                            #     remat_policies={
+                            #         "model.decoder.transformer.layer": RematSpec(
+                            #             prevent_cse=True,
+                            #             policy=offload_attention_proj_policy,
+                            #         ),
+                            #     }
+                            # ),
+                        ],
+                    ),
+                ),
+                (
                     "tpu-v6e-256-4",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
@@ -329,6 +378,8 @@ def get_trainer_kwargs(
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
 
+    total_devices = len(jax.devices())
+    trainer_kwargs["train_batch_size"] = total_devices
     merged_trainer_kwargs = common_trainer_kwargs()
     merged_trainer_kwargs.update(
         {k: v for k, v in trainer_kwargs.items() if k not in ("model_kwargs", "learner_kwargs")}

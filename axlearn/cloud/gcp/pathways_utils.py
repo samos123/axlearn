@@ -295,7 +295,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS as well.
         self._update_env_list(env_list, "TEST_UNDECLARED_OUTPUTS_DIR", "true")
         # 128MB
-        self._update_env_list(env_list, "IFRT_PROXY_LARGE_TRANSFER_THRESHOLD", "134217728")
+        self._update_env_list(env_list, "IFRT_PROXY_LARGE_TRANSFER_THRESHOLD", "1")
         self._update_env_list(
             env_list, "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY", "/tmp/ifrt_proxy"
         )

@@ -49,7 +49,7 @@ _PATHWAYS_WORKER_PORT = 29001
 # This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
 # This image extends GRPC timeout for long context models.
 # _PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
-_PATHWAYS_IMAGE_TAG = "uds"
+_PATHWAYS_IMAGE_TAG = "shm"
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
     # f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
@@ -274,17 +274,17 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         head_container = copy.deepcopy(container)
 
         env_list = head_container.get("env", [])
-        # self._update_env_list(
-        #     env_list,
-        #     "JAX_BACKEND_TARGET",
-        #     f"grpc://localhost:{_PATHWAYS_PROXY_PORT}",
-        # )
-        # Unix domain socket
         self._update_env_list(
             env_list,
             "JAX_BACKEND_TARGET",
-            "grpc:///tmp/ifrt_proxy.sock",
+            f"grpc://localhost:{_PATHWAYS_PROXY_PORT}",
         )
+        # Unix domain socket
+        # self._update_env_list(
+        #     env_list,
+        #     "JAX_BACKEND_TARGET",
+        #     "grpc:///tmp/ifrt_proxy.sock",
+        # )
         self._update_env_list(env_list, "XCLOUD_ENVIRONMENT", "GCP")
         self._update_env_list(env_list, "JAX_PLATFORMS", "proxy")
         self._update_env_list(env_list, "ENABLE_PATHWAYS_PERSISTENCE", "1")
@@ -294,7 +294,11 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         # In Jax 0.6.2 and beyond this flag can be renamed to
         # IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS as well.
         self._update_env_list(env_list, "TEST_UNDECLARED_OUTPUTS_DIR", "true")
-
+        # 128MB
+        self._update_env_list(env_list, "IFRT_PROXY_LARGE_TRANSFER_THRESHOLD", "134217728")
+        self._update_env_list(
+            env_list, "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY", "/tmp/ifrt_proxy"
+        )
         env_list.append(
             {
                 "name": "HOST_ADDRESS",
@@ -339,7 +343,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         head_container["resources"] = resources
 
         volume_mounts = head_container.get("volumeMounts", [])
-        volume_mounts.append(dict(name="shared-memory", mountPath="/tmp/"))
+        volume_mounts.append(dict(name="shared-memory", mountPath="/tmp/ifrt_proxy"))
         head_container["volumeMounts"] = volume_mounts
 
         return head_container
@@ -388,11 +392,15 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                     # TODO(samos123): Remove this once this becomes the default.
                     {"name": "IFRT_PROXY_USE_INSECURE_GRPC_CREDENTIALS", "value": "true"},
                     {"name": "XLA_FLAGS", "value": f"--xla_dump_to=/output/{cfg.name}/xla"},
+                    {
+                        "name": "IFRT_PROXY_LARGE_TRANSFER_OPTIMIZATION_DIRECTORY",
+                        "value": "/tmp/ifrt_proxy",
+                    },
                 ],
                 ports=[dict(containerPort=_PATHWAYS_PROXY_PORT)],
                 volumeMounts=[
                     dict(name="shared-output", mountPath="/output"),
-                    dict(name="shared-memory", mountPath="/tmp/"),
+                    dict(name="shared-memory", mountPath="/tmp/ifrt_proxy"),
                 ],
             ),
             dict(

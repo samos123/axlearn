@@ -94,6 +94,9 @@ RUN uv pip install -U --pre jax jaxlib libtpu requests -i https://us-python.pkg.
     && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
 COPY . .
+RUN uv pip install jaxlib-0.7.2.dev0+selfbuilt-cp312-cp312-manylinux_2_27_x86_64.whl \
+    && uv cache clean
+
 
 ################################################################################
 # GPU container spec.                                                          #

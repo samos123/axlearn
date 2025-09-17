@@ -220,8 +220,9 @@ async def _async_serialize(
     max_data_shard_degree: int,
     shard_threshold_bytes: int,
 ):
-    """Similar to `serialization.ts_impl.async_serialize`, but limiting peak host memory
-    usage and sharding along data-parallel axis.
+    # pylint: disable=line-too-long
+    """Similar to `serialization.ts_impl.async_serialize`, but limiting peak host memory usage and sharding
+    along data-parallel axis.
 
     Specifically, TensorStores are opened only for shards which correspond to the current host, and
     only if
@@ -244,15 +245,7 @@ async def _async_serialize(
     nbytes = sum(info.data.nbytes // info.replica_count for info in shard_infos)
     # Await for limiter before D2H.
     if limiter is not None:
-        # pylint: disable-next=protected-access
-        if nbytes > limiter._max_bytes:
-            raise ValueError(
-                "Attempting to read more bytes than we allocated space for in the limiter"
-                # pylint: disable-next=protected-access
-                f"{nbytes} > {limiter._max_bytes}"
-            )
-        else:
-            await limiter.wait_for_bytes(nbytes)
+        await limiter.wait_for_bytes(nbytes)
 
     # Fully addressable arrays lead to races between multiple writing hosts.
     assert not (
@@ -283,14 +276,14 @@ async def _async_serialize(
     # does no I/O operation and returns the tensorstore object. For every process other than `0`,
     # we open with `assume_metadata=True`.
     if jax.process_index() == 0:
-        await ts.open(
-            ts.Spec(tensorstore_spec),
+        await serialization.ts_impl.ts.open(
+            serialization.ts_impl.ts.Spec(tensorstore_spec),
             create=True,
             open=True,
             context=serialization.TS_CONTEXT,
         )
-    t = await ts.open(
-        ts.Spec(tensorstore_spec),
+    t = await serialization.ts_impl.ts.open(
+        serialization.ts_impl.ts.Spec(tensorstore_spec),
         open=True,
         assume_metadata=True,
         context=serialization.TS_CONTEXT,
@@ -361,10 +354,12 @@ async def _run_serializer(
         raise e
 
 
-def _blocking_device_put(out: Tensor, layout: Layout) -> Tensor:
+def _blocking_device_put(
+    out: Tensor, device_assignment: Union[Layout, jax.sharding.Sharding]
+) -> Tensor:
     # Make it non blocking
-    # return jax.device_put(out, layout)
-    return jax.block_until_ready(jax.device_put(out, layout))
+    # return jax.device_put(out, device_assignment)
+    return jax.block_until_ready(jax.device_put(out, device_assignment))
 
 
 async def _async_deserialize(
@@ -417,7 +412,7 @@ async def _async_deserialize(
             "sharding passed to deserialization should be specified, concrete and"
             f" an instance of `jax.sharding.Sharding`. Got {in_sharding}"
         )
-    dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Layout) else None
+    dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Layout) else ()
 
     # gcs_grpc improves performance.
     if tensorstore_spec.get("kvstore", {}).get("driver", "") == "gcs":
@@ -482,14 +477,30 @@ async def _async_deserialize(
         out_size = math.ceil(out_size / mb_256) * mb_256
 
         logging.info("in_sharding: %s", in_sharding)
-        layout = Layout(
-            dll, jax.sharding.SingleDeviceSharding(device, memory_kind=in_sharding.memory_kind)
+        device_assignment = jax.sharding.SingleDeviceSharding(
+            device, memory_kind=in_sharding.memory_kind
         )
-
-        # Jax >= 0.6.2 changes the behavior of _LimitInFlightBytes, where wait_for_bytes no longer
-        # throws an exception if requested_bytes > max_bytes
-        # pylint: disable-next=protected-access
-        if out_size > h2d_limiter._max_bytes:
+        if dll:
+            # TODO(markblee): See if we can preserve major_to_minor.
+            logging.warning("Cannot preserve device_local_layout due to JAX API change.")
+        try:
+            log_id = id(out)
+            logging.info(
+                "Sending jax.device_put of size %s MiB. Shape: %s. ID: %s",
+                out_size / (1024 * 1024),
+                out.shape,
+                log_id,
+            )
+            start_time = time.time()
+            await h2d_limiter.wait_for_bytes(out_size)
+            result = await loop.run_in_executor(None, _blocking_device_put, out, device_assignment)
+            await h2d_limiter.release_bytes(out_size)
+            logging.info("Device put took %.4f seconds. ID: %s", time.time() - start_time, log_id)
+            # We delete afterwards from HBM since we're testing on v5e with limited HBM
+            # result.delete(), this didn't work it causes instance device_puts
+        except ValueError as e:
+            if "Requested more bytes than we reserved" not in str(e):
+                raise e  # Raise if it's not the type of error we expect.
             logging.log_first_n(
                 logging.WARNING,
                 "Tensor shard for tensor %s (padded size %d bytes) exceeded "
@@ -502,22 +513,16 @@ async def _async_deserialize(
                 h2d_limiter._max_bytes,
             )
             result = await loop.run_in_executor(
-                single_thread_pool, _blocking_device_put, out, layout
+                single_thread_pool, _blocking_device_put, out, device_assignment
             )
-        else:
-            try:
-                await h2d_limiter.wait_for_bytes(out_size)
-                result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
-                await h2d_limiter.release_bytes(out_size)
-            except ValueError as e:
-                if "Requested more bytes than we reserved" not in str(e):
-                    raise e  # Raise if it's not the type of error we expect.
 
         await byte_limiter.release_bytes(requested_bytes)
         return result
 
     # pylint: disable-next=protected-access
-    return await serialization.ts_impl._create_async_array_from_callback(shape, in_sharding, cb)
+    return await serialization.ts_impl._create_async_array_from_callback(
+        global_shape=shape, dtype=dtype, inp_sharding=in_sharding, data_callback=cb
+    )
 
 
 # Reference:
@@ -619,6 +624,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
 
     # Copied from (with modifications)
     # https://github.com/jax-ml/jax/blob/66037d10e7742c4fcadd07f0459a00813ec7ed5f/jax/experimental/array_serialization/serialization.py#L413-L429
+    # pylint: disable=too-many-positional-arguments
     def deserialize(
         self,
         shardings: Sequence[Union[jax.sharding.Sharding, Layout]],
@@ -800,5 +806,7 @@ class BoundedDataShardedAsyncCheckpointManager(GlobalAsyncCheckpointManager):
             self._logged_spec = True
             self._tensorstore_spec_log_fn(tensorstore_specs)
 
+        logging.info("D2H during save took %fs. Starting async commit.", time.time() - start_t)
+        self._start_async_commit(on_commit_callback)
         logging.info("D2H during save took %fs. Starting async commit.", time.time() - start_t)
         self._start_async_commit(on_commit_callback)

@@ -244,7 +244,15 @@ async def _async_serialize(
     nbytes = sum(info.data.nbytes // info.replica_count for info in shard_infos)
     # Await for limiter before D2H.
     if limiter is not None:
-        await limiter.wait_for_bytes(nbytes)
+        # pylint: disable-next=protected-access
+        if nbytes > limiter._max_bytes:
+            raise ValueError(
+                "Attempting to read more bytes than we allocated space for in the limiter"
+                # pylint: disable-next=protected-access
+                f"{nbytes} > {limiter._max_bytes}"
+            )
+        else:
+            await limiter.wait_for_bytes(nbytes)
 
     # Fully addressable arrays lead to races between multiple writing hosts.
     assert not (
@@ -275,14 +283,14 @@ async def _async_serialize(
     # does no I/O operation and returns the tensorstore object. For every process other than `0`,
     # we open with `assume_metadata=True`.
     if jax.process_index() == 0:
-        await serialization.ts_impl.ts.open(
-            serialization.ts_impl.ts.Spec(tensorstore_spec),
+        await ts.open(
+            ts.Spec(tensorstore_spec),
             create=True,
             open=True,
             context=serialization.TS_CONTEXT,
         )
-    t = await serialization.ts_impl.ts.open(
-        serialization.ts_impl.ts.Spec(tensorstore_spec),
+    t = await ts.open(
+        ts.Spec(tensorstore_spec),
         open=True,
         assume_metadata=True,
         context=serialization.TS_CONTEXT,
@@ -477,24 +485,11 @@ async def _async_deserialize(
         layout = Layout(
             dll, jax.sharding.SingleDeviceSharding(device, memory_kind=in_sharding.memory_kind)
         )
-        try:
-            log_id = id(out)
-            logging.info(
-                "Sending jax.device_put of size %s MiB. Shape: %s. ID: %s",
-                out_size / (1024 * 1024),
-                out.shape,
-                log_id,
-            )
-            start_time = time.time()
-            await h2d_limiter.wait_for_bytes(out_size)
-            result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
-            await h2d_limiter.release_bytes(out_size)
-            logging.info("Device put took %.4f seconds. ID: %s", time.time() - start_time, log_id)
-            # We delete afterwards from HBM since we're testing on v5e with limited HBM
-            # result.delete(), this didn't work it causes instance device_puts
-        except ValueError as e:
-            if "Requested more bytes than we reserved" not in str(e):
-                raise e  # Raise if it's not the type of error we expect.
+
+        # Jax >= 0.6.2 changes the behavior of _LimitInFlightBytes, where wait_for_bytes no longer
+        # throws an exception if requested_bytes > max_bytes
+        # pylint: disable-next=protected-access
+        if out_size > h2d_limiter._max_bytes:
             logging.log_first_n(
                 logging.WARNING,
                 "Tensor shard for tensor %s (padded size %d bytes) exceeded "
@@ -509,6 +504,14 @@ async def _async_deserialize(
             result = await loop.run_in_executor(
                 single_thread_pool, _blocking_device_put, out, layout
             )
+        else:
+            try:
+                await h2d_limiter.wait_for_bytes(out_size)
+                result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
+                await h2d_limiter.release_bytes(out_size)
+            except ValueError as e:
+                if "Requested more bytes than we reserved" not in str(e):
+                    raise e  # Raise if it's not the type of error we expect.
 
         await byte_limiter.release_bytes(requested_bytes)
         return result

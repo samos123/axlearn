@@ -96,7 +96,7 @@ class SerializerTest(parameterized.TestCase):
         arr = self._create_partially_replicated_array(sharded)
 
         ts_open_handle: Any = None
-        old_open = array_serialization.serialization.ts_impl.ts.open
+        old_open = array_serialization.ts.open
 
         async def ts_open_patch(*args, **kwargs):
             nonlocal ts_open_handle
@@ -118,7 +118,7 @@ class SerializerTest(parameterized.TestCase):
 
         d2h_future = array_serialization.futures.Future()
         with mock.patch(
-            f"{array_serialization.__name__}.serialization.ts_impl.ts.open",
+            f"{array_serialization.__name__}.ts.open",
             ts_open_patch,
         ), get_tensorstore_spec(arr) as spec, mock.patch(
             f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch
@@ -144,7 +144,7 @@ class SerializerTest(parameterized.TestCase):
         arr_host = jax.device_get(arr)
         d2h_future = array_serialization.futures.Future()
         with mock.patch(
-            f"{array_serialization.__name__}.serialization.ts_impl.ts.open",
+            f"{array_serialization.__name__}.ts.open",
             ts_open_patch,
         ), get_tensorstore_spec(arr) as spec, mock.patch(
             f"{array_serialization.__name__}._transfer_to_host", transfer_to_host_patch
@@ -178,7 +178,7 @@ class SerializerTest(parameterized.TestCase):
 
         d2h_future = array_serialization.futures.Future()
         with mock.patch(
-            f"{array_serialization.__name__}.serialization.ts_impl.ts.open",
+            f"{array_serialization.__name__}.ts.open",
             ts_open_patch,
         ), get_tensorstore_spec(arr) as spec:
             f = _CommitFuture(
@@ -229,9 +229,7 @@ class SerializerTest(parameterized.TestCase):
         arrays = [
             mock.Mock(
                 addressable_shards=[
-                    mock.Mock(
-                        replica_id=0, **{"data.nbytes": int(shard * 10**9), "data.shape": ()}
-                    )
+                    mock.Mock(replica_id=0, **{"data.nbytes": int(shard * 10**9), "data.shape": ()})
                     for shard in array
                 ],
                 nbytes=int(sum(array) * 10**9),
@@ -276,8 +274,8 @@ class SerializerTest(parameterized.TestCase):
             mock.patch(
                 f"{array_serialization.__name__}.serialization._get_metadata", lambda *_: {}
             ),
-            mock.patch(f"{array_serialization.__name__}.serialization.ts_impl.ts.open", open_patch),
-            mock.patch(f"{array_serialization.__name__}.serialization.ts_impl.ts.Spec", mock.MagicMock()),
+            mock.patch(f"{array_serialization.__name__}.ts.open", open_patch),
+            mock.patch(f"{array_serialization.__name__}.ts.Spec", mock.MagicMock()),
         ):
             manager.serialize(arrays, tensorstore_specs, on_commit_callback=lambda: None)
             manager.wait_until_finished()

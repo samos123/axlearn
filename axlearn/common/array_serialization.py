@@ -808,5 +808,3 @@ class BoundedDataShardedAsyncCheckpointManager(GlobalAsyncCheckpointManager):
 
         logging.info("D2H during save took %fs. Starting async commit.", time.time() - start_t)
         self._start_async_commit(on_commit_callback)
-        logging.info("D2H during save took %fs. Starting async commit.", time.time() - start_t)
-        self._start_async_commit(on_commit_callback)

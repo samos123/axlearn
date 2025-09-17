@@ -33,7 +33,7 @@ from axlearn.common.attention import (
     StackedTransformerLayer,
 )
 from axlearn.common.base_layer import RematSpec
-from axlearn.common.config import TrainerConfigFn, config_for_function
+from axlearn.common.config import config_for_function, with_overrides
 from axlearn.common.decoder import LmHead
 from axlearn.common.embedding import TransformerTextEmbeddings
 from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
@@ -66,7 +66,7 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
-from axlearn.experiments.trainer_config_utils import V6eFlashConfigModifier
+from axlearn.experiments.trainer_config_utils import TrainerConfigFn, V6eFlashConfigModifier
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B", "405B")
 
@@ -754,12 +754,13 @@ def get_trainer_kwargs(
                                         policy=config_for_function(
                                             save_and_offload_only_these_names_regex
                                         ).set(
-                                            names_which_can_be_saved="|".join(
-                                                [
-                                                    RematRegexSavePatterns.FLASH_ATTENTION.value,
-                                                    ".*linear1_0",
-                                                ]
-                                            ),
+                                            names_which_can_be_saved=None,
+                                            # names_which_can_be_saved="|".join(
+                                            #     [
+                                            #         RematRegexSavePatterns.FLASH_ATTENTION.value,
+                                            #         ".*linear1_0",
+                                            #     ]
+                                            # ),
                                             names_which_can_be_offloaded=None,
                                             offload_src="device",
                                             offload_dst="pinned_host",
@@ -1059,6 +1060,7 @@ def trainer_configs(
             ),
             **kwargs,
         )
+        config_map[config_name] = with_overrides(config_map[config_name], max_steps=15)
 
         def make_fp8_config(base_config_name: str) -> SpmdTrainer.Config:
             """Make a FP8 variant of the base config.

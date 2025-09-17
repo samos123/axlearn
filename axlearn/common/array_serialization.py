@@ -220,8 +220,8 @@ async def _async_serialize(
     max_data_shard_degree: int,
     shard_threshold_bytes: int,
 ):
-    """Similar to `serialization.async_serialize`, but limiting peak host memory usage and sharding
-    along data-parallel axis.
+    """Similar to `serialization.ts_impl.async_serialize`, but limiting peak host memory
+    usage and sharding along data-parallel axis.
 
     Specifically, TensorStores are opened only for shards which correspond to the current host, and
     only if
@@ -253,7 +253,7 @@ async def _async_serialize(
         and arr_inp.is_fully_addressable
     )
     # pylint: disable-next=protected-access
-    if not serialization._spec_has_metadata(tensorstore_spec):
+    if not serialization.ts_impl._spec_has_metadata(tensorstore_spec):
         # pylint: disable-next=protected-access
         tensorstore_spec["metadata"] = serialization._get_metadata(arr_inp)
     if "dtype" not in tensorstore_spec:
@@ -275,14 +275,14 @@ async def _async_serialize(
     # does no I/O operation and returns the tensorstore object. For every process other than `0`,
     # we open with `assume_metadata=True`.
     if jax.process_index() == 0:
-        await serialization.ts.open(
-            serialization.ts.Spec(tensorstore_spec),
+        await serialization.ts_impl.ts.open(
+            serialization.ts_impl.ts.Spec(tensorstore_spec),
             create=True,
             open=True,
             context=serialization.TS_CONTEXT,
         )
-    t = await serialization.ts.open(
-        serialization.ts.Spec(tensorstore_spec),
+    t = await serialization.ts_impl.ts.open(
+        serialization.ts_impl.ts.Spec(tensorstore_spec),
         open=True,
         assume_metadata=True,
         context=serialization.TS_CONTEXT,
@@ -294,7 +294,10 @@ async def _async_serialize(
     is_jax_array = isinstance(arr_inp, jax.Array)
     await asyncio.gather(
         *(
-            t[info.index].write(info.data, can_reference_source_data_indefinitely=is_jax_array)
+            t[info.index].write(
+                info.data,
+                can_reference_source_data_indefinitely=is_jax_array,
+            )
             for info in shard_infos
         )
     )
@@ -435,7 +438,7 @@ async def _async_deserialize(
     async def cb(index: array.Index, device: jax.Device):
         requested_domain = ts.IndexTransform(input_shape=shape)[index].domain
         restricted_domain = t.domain.intersect(requested_domain)
-        requested_bytes = serialization.estimate_read_memory_footprint(t, restricted_domain)
+        requested_bytes = serialization.ts_impl.estimate_read_memory_footprint(t, restricted_domain)
         # Limit the bytes read for every shard.
         await byte_limiter.wait_for_bytes(requested_bytes)
         read_ts = t[restricted_domain]
@@ -510,7 +513,8 @@ async def _async_deserialize(
         await byte_limiter.release_bytes(requested_bytes)
         return result
 
-    return await serialization.create_async_array_from_callback(shape, in_sharding, cb)
+    # pylint: disable-next=protected-access
+    return await serialization.ts_impl._create_async_array_from_callback(shape, in_sharding, cb)
 
 
 # Reference:
@@ -592,7 +596,7 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         # pylint: disable-next=redefined-outer-name
         async def _run_serializer():
             future_writer = jax.tree.map(
-                serialization.async_serialize, arrays, tensorstore_specs, commit_futures
+                serialization.ts_impl.async_serialize, arrays, tensorstore_specs, commit_futures
             )
             return await asyncio.gather(*future_writer)
 

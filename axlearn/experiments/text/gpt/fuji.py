@@ -15,7 +15,6 @@ import functools
 import itertools
 from typing import Any, List, NamedTuple, Optional, Union
 
-import jax
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 
 from axlearn.common import causal_lm, config
@@ -968,8 +967,6 @@ def get_trainer_kwargs(
         )
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
-    total_chips = len(jax.devices())
-    trainer_kwargs["train_batch_size"] = total_chips
     model_kwargs = trainer_kwargs.pop("model_kwargs")
     model_kwargs.setdefault("vocab_size", vocab_size)
     if version == Version.V3_TIKTOKEN:  # tiktoken tokenizer

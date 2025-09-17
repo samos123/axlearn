@@ -637,9 +637,9 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         # concurrent_gb = max(64, concurrent_gb)
         logging.info("concurrent_gb=%s GB.", concurrent_gb)
         self.wait_until_finished()
-        start_time = time.time()
         uid = uuid.uuid4()
         jax.profiler.start_trace(f"gs://cloud-tpu-multipod-dev-uss1/stoelinga-{uid}/")
+        start_time = time.time()
 
         concurrent_bytes = concurrent_gb * 10**9
 

@@ -175,8 +175,9 @@ def default_xla_options(
             xla_should_allow_loop_variant_parameter_in_chain="true",
             xla_should_add_loop_invariant_op_in_chain="true",
             xla_tpu_enable_ici_ag_pipelining="true",
-            xla_tpu_all_gather_collective_matmul_mode="post_spmd",
-            xla_tpu_reduce_scatter_collective_matmul_mode="post_spmd",
+            # Compiler options available in newer Jax versions
+            # xla_tpu_all_gather_collective_matmul_mode="post_spmd",
+            # xla_tpu_reduce_scatter_collective_matmul_mode="post_spmd",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.

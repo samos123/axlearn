@@ -17,9 +17,12 @@ https://github.com/google/orbax/blob/3cc343c63c769e4b2df44f3e57f6b5b43569df32/ch
 https://github.com/google/jax/blob/595a620804e810335a870e93975a78504b2e95e5/jax/experimental/array_serialization/serialization.py
 """
 import asyncio
+import datetime
 import functools
+import itertools
 import math
 import os
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -36,6 +39,7 @@ from absl import logging
 from jax._src import array, typing
 from jax._src.layout import Layout
 from jax.experimental.array_serialization import serialization
+from pathwaysutils.persistence import helper
 
 from axlearn.common.utils import Tensor
 
@@ -578,6 +582,84 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         # has finished writing.
         self._start_async_commit(on_commit_callback)
 
+    def deserialize_pathways(
+        self,
+        shardings: Sequence[Union[jax.sharding.Sharding, Layout]],
+        tensorstore_specs: Sequence[dict[str, Any]],
+        global_shapes: Optional[Sequence[array.Shape]] = None,
+        dtypes: Optional[Sequence[typing.DTypeLike]] = None,
+    ):
+        self.wait_until_finished()
+
+        if global_shapes is None:
+            global_shapes = []
+
+        if dtypes is None:
+            dtypes = []
+
+        # We can issue one bulk read request for all arrays in the same bucket
+        # and with the same mesh.
+        bulk_read_inputs = defaultdict(
+            lambda: dict(indices=[], names=[], dtypes=[], shapes=[], shardings=[])
+        )
+
+        for index, (tensorstore_spec, sharding, global_shape, dtype) in enumerate(
+            itertools.zip_longest(tensorstore_specs, shardings, global_shapes, dtypes)
+        ):
+            sharding = sharding.sharding if isinstance(sharding, Layout) else sharding
+            if not isinstance(sharding, jax.sharding.Sharding):
+                raise ValueError(
+                    "sharding passed to deserialization should be specified, concrete and"
+                    f" an instance of `jax.sharding.Sharding`. Got {sharding}"
+                )
+
+            kvstore = tensorstore_spec["kvstore"]
+            if kvstore.get("driver", "") != "gcs":
+                raise ValueError("Only GCS backed checkpoints have been tested")
+
+            location = f"gs://{kvstore['bucket']}"
+            name = kvstore["path"]
+            shape = tensorstore_spec["metadata"]["shape"] if global_shape is None else global_shape
+            dtype = tensorstore_spec["metadata"]["dtype"] if dtype is None else dtype
+
+            key = location, sharding.mesh
+            bulk_read_inputs[key]["indices"].append(index)
+            bulk_read_inputs[key]["names"].append(name)
+            bulk_read_inputs[key]["dtypes"].append(dtype)
+            bulk_read_inputs[key]["shapes"].append(shape)
+            bulk_read_inputs[key]["shardings"].append(sharding)
+
+        unsorted_results = []
+        read_futures = []
+        start = time.time()
+        # We make a bulk read request for all arrays with the same location
+        # and mesh, keeping track of each array's index in the orginal sequence
+        # so that we can sort them after the fact.
+        for (location, mesh), bulk_read_input in bulk_read_inputs.items():
+            arrays, read_future = helper.read_arrays(
+                location=location,
+                names=bulk_read_input["names"],
+                dtypes=bulk_read_input["dtypes"],
+                shapes=bulk_read_input["shapes"],
+                shardings=bulk_read_input["shardings"],
+                devices=mesh.devices,
+                timeout=datetime.timedelta(minutes=10),
+            )
+
+            read_futures.append(read_future)
+            logging.info(
+                "Bulk read from location=%s %d arrays", location, len(bulk_read_input["names"])
+            )
+
+            unsorted_results.extend(list(zip(bulk_read_input["indices"], arrays)))
+
+        futures.wait(read_futures)
+        end = time.time()
+
+        logging.info("Read %d arrays in %f seconds", len(unsorted_results), end - start)
+
+        return [array for _, array in sorted(unsorted_results)]
+
     # Copied from (with modifications)
     # https://github.com/jax-ml/jax/blob/66037d10e7742c4fcadd07f0459a00813ec7ed5f/jax/experimental/array_serialization/serialization.py#L413-L429
     def deserialize(
@@ -588,22 +670,38 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
         dtypes: Optional[Sequence[typing.DTypeLike]] = None,
         concurrent_gb: int = 32,
     ):
+        if os.getenv("JAX_PLATFORMS") == "proxy":
+            return self.deserialize_pathways(
+                shardings,
+                tensorstore_specs,
+                global_shapes,
+                dtypes,
+            )
+
         self.wait_until_finished()
+        start_time = time.time()
 
         concurrent_bytes = concurrent_gb * 10**9
+        # Increase the amount of bytes to read and deserialize in parallel.
+        # This is important especially for larger models. You should set this as
+        # big as possible until you run out of memory. Note do not use this change
+        # in production, instead pass a bigger value of concurrent_gb.
+
+        logging.info("concurrent_gb: %s", concurrent_bytes / 10**9)
 
         async def _run_deserializer():
             # Object should be created once per process.
             # pylint: disable=protected-access
             byte_limiter = serialization._LimitInFlightBytes(concurrent_bytes)
             h2d_limiter = serialization._LimitInFlightBytes(_get_premapped_buffer_size())
+            thread_pool = ThreadPoolExecutor(max_workers=192)
 
             future_arrays = jax.tree.map(
                 functools.partial(
                     _async_deserialize,
                     byte_limiter=byte_limiter,
                     h2d_limiter=h2d_limiter,
-                    single_thread_pool=self._single_thread_pool,
+                    single_thread_pool=thread_pool,
                 ),
                 shardings,
                 tensorstore_specs,
@@ -613,7 +711,12 @@ class GlobalAsyncCheckpointManager(serialization.GlobalAsyncCheckpointManager):
             return await asyncio.gather(*future_arrays)
 
         fut = asyncio.run_coroutine_threadsafe(_run_deserializer(), self._loop)
-        return fut.result()
+        result = fut.result()
+        logging.info("deserialize took %.4f seconds.", time.time() - start_time)
+        jax.profiler.stop_trace()
+        # pylint: disable=unreachable
+        sys.exit(0)
+        return result
 
 
 class BoundedDataShardedAsyncCheckpointManager(GlobalAsyncCheckpointManager):

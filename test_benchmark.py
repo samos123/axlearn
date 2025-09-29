@@ -247,7 +247,7 @@ def main():
         def run_deserializer():
             # Object should be created once per process.
             # pylint: disable=protected-access
-            concurrent_bytes = 1099511627776
+            concurrent_bytes = 1099511627776  # 1024 GB
             byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
             h2d_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
             thread_pool = ThreadPoolExecutor(10)

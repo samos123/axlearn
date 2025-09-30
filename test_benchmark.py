@@ -197,7 +197,76 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
     return tensorstore_specs, shardings, shapes, dtypes
 
 
-def load_model(ckpt_path: str):
+def _default_deserialize(
+    shardings: Sequence[jax.sharding.NamedSharding],
+    tensorstore_specs: Sequence[Dict[str, Any]],
+    global_shapes: Sequence[tuple],
+    dtypes: Sequence[jnp.dtype],
+):
+    concurrent_bytes = 1099511627776
+    # concurrent_bytes = 34359738368 # 32GB
+    # Object should be created once per process.
+    # pylint: disable=protected-access
+    byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
+    h2d_limiter = tensorstore_impl._LimitInFlightBytes(34359738368)
+    thread_pool = ThreadPoolExecutor(1)
+
+    future_arrays = jax.tree.map(
+        functools.partial(
+            _async_deserialize,
+            byte_limiter=byte_limiter,
+            h2d_limiter=h2d_limiter,
+            single_thread_pool=thread_pool,
+        ),
+        shardings,
+        tensorstore_specs,
+        global_shapes,
+        dtypes,
+    )
+
+    async def gather_func():
+        return await asyncio.gather(*future_arrays)
+
+    result = asyncio.run(gather_func())
+    return result
+
+
+def load_model_default(ckpt_path: str):
+    """Main function to preload a model from GCS checkpoint."""
+    step = parse_step_from_dir(ckpt_path)
+    print(f"Starting model preload from: {ckpt_path} (step {step})")
+
+    if not ckpt_path.startswith("gs://"):
+        raise ValueError(f"Only GCS paths (gs://) are supported, got: {ckpt_path}")
+
+    with create_mesh():
+        print("Reading checkpoint structure...")
+        state_spec = create_state_spec_from_checkpoint(ckpt_path)
+
+        print(f"Found {len(jax.tree_util.tree_leaves(state_spec))} tensors in checkpoint")
+
+        tensorstore_specs, shardings, shapes, dtypes = create_checkpoint_spec_from_state(
+            ckpt_path, state_spec
+        )
+
+        print("Preloading checkpoint to TPU memory...")
+        start_time = time.perf_counter()
+
+        restored_values = _default_deserialize(
+            shardings=shardings,
+            tensorstore_specs=tensorstore_specs,
+            global_shapes=shapes,
+            dtypes=dtypes,
+        )
+
+        preload_time = time.perf_counter() - start_time
+        print(f"Preload completed in {preload_time:.2f} seconds")
+        print(f"Preloaded {len(restored_values)} arrays")
+
+        return restored_values
+
+
+def load_model_colocated(ckpt_path: str):
     """Main function to preload a model from GCS checkpoint."""
     step = parse_step_from_dir(ckpt_path)
     print(f"Starting model preload from: {ckpt_path} (step {step})")
@@ -257,10 +326,19 @@ def main():
 
     print(f"JAX devices: {jax.devices()}")
 
-    loaded_values = load_model(ckpt_path=args.ckpt_path)
-
+    print("--- Running colocated benchmark ---")
+    start_colocated_time = time.perf_counter()
+    loaded_values_colocated = load_model_colocated(ckpt_path=args.ckpt_path)
     print(f"✅ Successfully loaded model from {args.ckpt_path}")
-    print(f"   Total parameters: {sum(x.size for x in loaded_values):,}")
+    print(f"Deserialize took {time.perf_counter() - start_colocated_time:.2f} seconds")
+    print(f"   Total parameters: {sum(x.size for x in loaded_values_colocated):,}")
+
+    print("\n--- Running default benchmark ---")
+    start_default_time = time.perf_counter()
+    loaded_values_default = load_model_default(ckpt_path=args.ckpt_path)
+    print(f"✅ Successfully loaded model from {args.ckpt_path}")
+    print(f"Deserialize took {time.perf_counter() - start_default_time:.2f} seconds")
+    print(f"   Total parameters: {sum(x.size for x in loaded_values_default):,}")
 
 
 if __name__ == "__main__":

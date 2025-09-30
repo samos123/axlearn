@@ -46,7 +46,8 @@ def _colocated_deserialize(
     global_shapes: Sequence[tuple],
     dtypes: Sequence[jnp.dtype],
 ):
-    concurrent_bytes = 1099511627776
+    # concurrent_bytes = 1099511627776
+    concurrent_bytes = 34359738368 * 6  # multiple of 32GB
     cpu_devices = colocated_python.colocated_cpu_devices(jax.devices())
     print(f"{cpu_devices=}")
 
@@ -203,8 +204,8 @@ def _default_deserialize(
     global_shapes: Sequence[tuple],
     dtypes: Sequence[jnp.dtype],
 ):
-    concurrent_bytes = 1099511627776
-    # concurrent_bytes = 34359738368 # 32GB
+    # concurrent_bytes = 1099511627776
+    concurrent_bytes = 34359738368 * 6  # multiple of 32GB
     # Object should be created once per process.
     # pylint: disable=protected-access
     byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
@@ -320,8 +321,6 @@ def main():
         required=True,
         help="GCS path to checkpoint directory (e.g., gs://bucket/path/to/checkpoint)",
     )
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
-
     args = parser.parse_args()
 
     print(f"JAX devices: {jax.devices()}")

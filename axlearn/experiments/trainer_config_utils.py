@@ -23,6 +23,7 @@ class V6eFlashConfigModifier(FlashBlockSizeModifier):
 
         tpu_block_size: int = 1024
 
+
 class V7xFlashConfigModifier(FlashBlockSizeModifier):
     """Modifies the tpu_block_size config for better performance on TPU v7x."""
 

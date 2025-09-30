@@ -16,10 +16,7 @@ from axlearn.common.config import (
     config_for_function,
     with_overrides,
 )
-from axlearn.common.flash_attention.layer import (
-    FlashBlockSizeModifier,
-    TunedFlashBlockSizeModifier,
-)
+from axlearn.common.flash_attention.layer import FlashBlockSizeModifier, TunedFlashBlockSizeModifier
 from axlearn.common.flash_attention.layer_test import DummyModel as FlashDummyModel
 from axlearn.common.flash_attention.layer_test import FlashAttention
 from axlearn.common.input_fake import FakeLmInput
@@ -93,11 +90,11 @@ class TrainerConfigUtilsTest(parameterized.TestCase):
     def test_tuned_flash_block_size_config_modifier(self):
         cfg: FlashDummyModel.Config = FlashDummyModel.default_config()
         cfg.layer = FlashAttention.default_config()
-        cfg_modifier = TunedFlashBlockSizeModifier.default_config().set(
-            block_q=4096).instantiate()
+        cfg_modifier = TunedFlashBlockSizeModifier.default_config().set(block_q=4096).instantiate()
         cfg = cfg_modifier(cfg)
         self.assertNotEqual(cfg.layer.tpu_tuned_block_sizes, None)
         self.assertEqual(cfg.layer.tpu_tuned_block_sizes["block_q"], 4096)
+
 
 class DeepCopyWithClosureFnWrapperTest(parameterized.TestCase):
     """Test that the custom deepcopy with closure work as expected."""

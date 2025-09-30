@@ -35,10 +35,7 @@ from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import TrainerConfigFn, config_for_function, with_overrides
 from axlearn.common.decoder import LmHead
 from axlearn.common.embedding import TransformerTextEmbeddings
-from axlearn.common.flash_attention.layer import (
-    FlashBlockSizeModifier,
-    TunedFlashBlockSizeModifier,
-)
+from axlearn.common.flash_attention.layer import FlashBlockSizeModifier, TunedFlashBlockSizeModifier
 from axlearn.common.flash_attention.remat import save_or_offload_flash_attention_policy
 from axlearn.common.layers import RMSNorm
 from axlearn.common.trainer import SpmdTrainer
@@ -68,10 +65,7 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
-from axlearn.experiments.trainer_config_utils import (
-    V6eFlashConfigModifier,
-    V7xFlashConfigModifier,
-)
+from axlearn.experiments.trainer_config_utils import V6eFlashConfigModifier, V7xFlashConfigModifier
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B", "405B")
 
@@ -750,11 +744,11 @@ def get_trainer_kwargs(
                                         policy=config_for_function(
                                             save_and_offload_only_these_names_regex
                                         ).set(
-                                            #names_which_can_be_saved="|".join(
+                                            # names_which_can_be_saved="|".join(
                                             #    [
                                             #        RematRegexSavePatterns.QKV_PROJ.value,
                                             #    ]
-                                            #),
+                                            # ),
                                             names_which_can_be_saved=None,
                                             names_which_can_be_offloaded="|".join(
                                                 [
@@ -767,7 +761,7 @@ def get_trainer_kwargs(
                                     ),
                                 }
                             ),
-                            #GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
+                            # GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
                         ],
                     ),
                 ),
@@ -962,11 +956,11 @@ def get_trainer_kwargs(
                                         policy=config_for_function(
                                             save_and_offload_only_these_names_regex
                                         ).set(
-                                            #names_which_can_be_saved="|".join(
+                                            # names_which_can_be_saved="|".join(
                                             #    [
                                             #        RematRegexSavePatterns.QKV_PROJ.value,
                                             #    ]
-                                            #),
+                                            # ),
                                             names_which_can_be_saved=None,
                                             names_which_can_be_offloaded="|".join(
                                                 [

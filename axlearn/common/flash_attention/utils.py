@@ -56,6 +56,7 @@ def flash_attention_implementation(
     softmax_scale: float = 1.0,
     kv_cache_type: Optional[type[BaseKVCache]] = None,
     tpu_block_size: int = 512,
+    tpu_tuned_block_sizes: Optional[dict[str, int]] = None,
     gpu_block_size: int = 128,
     dropout_rate: Optional[float] = 0.0,
     page_tables: Optional[Tensor] = None,
@@ -86,6 +87,7 @@ def flash_attention_implementation(
         tpu_block_size: The size of the computation-block unit for 'tpu' backend.
             A multiple of 128, and should be less than the target sequence length.
             Smaller values are more memory efficient but less compute efficient.
+        tpu_tuned_block_sizes: Granular block sizes for TPU Pallas kernels
         gpu_block_size: Block size for GPU Pallas kernels. The default value of 128 should be the
             best value for almost all cases.
         dropout_rate: The optional dropout rate.
@@ -123,6 +125,7 @@ def flash_attention_implementation(
         interpret=_interpret(backend),
         softmax_scale=softmax_scale,
         tpu_block_size=tpu_block_size,
+        tpu_tuned_block_sizes=tpu_tuned_block_sizes,
         gpu_block_size=gpu_block_size,
     )
     input_batch = dict(

@@ -944,19 +944,31 @@ class TPUSplashAttention(TPUFlashAttention):
         key = jnp.einsum("bsnh->bnsh", key)
         value = jnp.einsum("bsnh->bnsh", value)
 
-        block_size = self.cfg.tpu_block_size
-        block_sizes = splash_attention_kernel.BlockSizes(
-            block_q=block_size,
-            block_kv=block_size,
-            block_kv_compute=block_size,
-            block_q_dkv=block_size,
-            block_kv_dkv=block_size,
-            block_kv_dkv_compute=block_size,
-            # The fused kernel is neutral in small models and a ~5%-15% improvement in larger ones.
-            # E.g., 1.03x speedup in a 12.6b simulated model, 1.06x speedup in 29.6b ,
-            # and 1.14x in 539.5b.
-            use_fused_bwd_kernel=True,
-        )
+        if self.cfg.tpu_tuned_block_sizes:
+            tuned_block_sizes = self.cfg.tpu_tuned_block_sizes
+            block_sizes = splash_attention_kernel.BlockSizes(
+                block_q=tuned_block_sizes["block_q"],
+                block_kv=tuned_block_sizes["block_kv"],
+                block_kv_compute=tuned_block_sizes["block_kv_compute"],
+                block_q_dkv=tuned_block_sizes["block_q_dkv"],
+                block_kv_dkv=tuned_block_sizes["block_kv_dkv"],
+                block_kv_dkv_compute=tuned_block_sizes["block_kv_dkv_compute"],
+                use_fused_bwd_kernel=True,
+            )
+        else:
+            block_size = self.cfg.tpu_block_size
+            block_sizes = splash_attention_kernel.BlockSizes(
+                block_q=block_size,
+                block_kv=block_size,
+                block_kv_compute=block_size,
+                block_q_dkv=block_size,
+                block_kv_dkv=block_size,
+                block_kv_dkv_compute=block_size,
+                # The fused kernel is neutral in small models and a ~5%-15% improvement in larger ones.
+                # E.g., 1.03x speedup in a 12.6b simulated model, 1.06x speedup in 29.6b ,
+                # and 1.14x in 539.5b.
+                use_fused_bwd_kernel=True,
+            )
         splash_mask = _to_splash_mask(
             mask, mask_shape=(query.shape[2], key.shape[2]), q_seq_shards=1
         )
@@ -1001,16 +1013,31 @@ class TPUSplashAttention(TPUFlashAttention):
         query = jnp.einsum("btnh->bnth", query) * self.cfg.softmax_scale
         key = jnp.einsum("bsnh->bnsh", key)
 
-        block_size = self.cfg.tpu_block_size
-        block_sizes = splash_attention_kernel.BlockSizes(
-            block_q=block_size,
-            block_kv=block_size,
-            block_kv_compute=block_size,
-            block_q_dkv=block_size,
-            block_kv_dkv=block_size,
-            block_kv_dkv_compute=block_size,
-            use_fused_bwd_kernel=True,
-        )
+        if self.cfg.tpu_tuned_block_sizes:
+            tuned_block_sizes = self.cfg.tpu_tuned_block_sizes
+            block_sizes = splash_attention_kernel.BlockSizes(
+                block_q=tuned_block_sizes["block_q"],
+                block_kv=tuned_block_sizes["block_kv"],
+                block_kv_compute=tuned_block_sizes["block_kv_compute"],
+                block_q_dkv=tuned_block_sizes["block_q_dkv"],
+                block_kv_dkv=tuned_block_sizes["block_kv_dkv"],
+                block_kv_dkv_compute=tuned_block_sizes["block_kv_dkv_compute"],
+                use_fused_bwd_kernel=True,
+            )
+        else:
+            block_size = self.cfg.tpu_block_size
+            block_sizes = splash_attention_kernel.BlockSizes(
+                block_q=block_size,
+                block_kv=block_size,
+                block_kv_compute=block_size,
+                block_q_dkv=block_size,
+                block_kv_dkv=block_size,
+                block_kv_dkv_compute=block_size,
+                # The fused kernel is neutral in small models and a ~5%-15% improvement in larger ones.
+                # E.g., 1.03x speedup in a 12.6b simulated model, 1.06x speedup in 29.6b ,
+                # and 1.14x in 539.5b.
+                use_fused_bwd_kernel=True,
+            )
 
         kernel = functools.partial(
             splash_attention_kernel.get_dropout_mask,

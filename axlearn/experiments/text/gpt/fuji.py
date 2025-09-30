@@ -35,7 +35,10 @@ from axlearn.common.base_layer import RematSpec
 from axlearn.common.config import TrainerConfigFn, config_for_function, with_overrides
 from axlearn.common.decoder import LmHead
 from axlearn.common.embedding import TransformerTextEmbeddings
-from axlearn.common.flash_attention.layer import FlashBlockSizeModifier
+from axlearn.common.flash_attention.layer import (
+    FlashBlockSizeModifier,
+    TunedFlashBlockSizeModifier,
+)
 from axlearn.common.flash_attention.remat import save_or_offload_flash_attention_policy
 from axlearn.common.layers import RMSNorm
 from axlearn.common.trainer import SpmdTrainer
@@ -65,7 +68,10 @@ from axlearn.experiments.text.gpt.common import (
 )
 from axlearn.experiments.text.gpt.common import model_config as common_model_config
 from axlearn.experiments.text.gpt.common import scaled_hidden_dim
-from axlearn.experiments.trainer_config_utils import V6eFlashConfigModifier
+from axlearn.experiments.trainer_config_utils import (
+    V6eFlashConfigModifier,
+    V7xFlashConfigModifier,
+)
 
 MODEL_SIZES = ("test", "1B", "3B", "7B", "8B", "70B", "405B")
 
@@ -730,7 +736,13 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(fsdp=-1)
                             ),
-                            FlashBlockSizeModifier.default_config().set(tpu_block_size=2048),
+                            # Use TunedFlashBlockSizeModifier instead of V7xFlashConfigModifier
+                            # since we only want to tune block_q and block_kv_compute
+                            # and use the default of 2048 for all other blocks
+                            TunedFlashBlockSizeModifier.default_config().set(
+                                block_q=4096,
+                                block_kv_compute=1024,
+                            ),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
@@ -738,19 +750,24 @@ def get_trainer_kwargs(
                                         policy=config_for_function(
                                             save_and_offload_only_these_names_regex
                                         ).set(
-                                            names_which_can_be_saved="|".join(
+                                            #names_which_can_be_saved="|".join(
+                                            #    [
+                                            #        RematRegexSavePatterns.QKV_PROJ.value,
+                                            #    ]
+                                            #),
+                                            names_which_can_be_saved=None,
+                                            names_which_can_be_offloaded="|".join(
                                                 [
-                                                    RematRegexSavePatterns.FLASH_ATTENTION.value,
-                                                    RematRegexSavePatterns.CONTEXT.value,
+                                                    RematRegexSavePatterns.INPUT.value,
                                                 ]
                                             ),
-                                            names_which_can_be_offloaded=None,
                                             offload_src="device",
                                             offload_dst="pinned_host",
                                         ),
                                     ),
                                 }
                             ),
+                            #GradientAccumulationModifier.default_config().set(grad_acc_steps=4),
                         ],
                     ),
                 ),
@@ -936,7 +953,8 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(fsdp=-1)
                             ),
-                            FlashBlockSizeModifier.default_config().set(tpu_block_size=2048),
+                            # Use the updated block size for Splash Attention
+                            V7xFlashConfigModifier.default_config(),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(
@@ -944,13 +962,16 @@ def get_trainer_kwargs(
                                         policy=config_for_function(
                                             save_and_offload_only_these_names_regex
                                         ).set(
-                                            # names_which_can_be_saved=(
-                                            #     RematRegexSavePatterns.QKV_PROJ.value
-                                            # ),
+                                            #names_which_can_be_saved="|".join(
+                                            #    [
+                                            #        RematRegexSavePatterns.QKV_PROJ.value,
+                                            #    ]
+                                            #),
                                             names_which_can_be_saved=None,
-                                            # names_which_can_be_offloaded=None,
-                                            names_which_can_be_offloaded=(
-                                                RematRegexSavePatterns.INPUT.value
+                                            names_which_can_be_offloaded="|".join(
+                                                [
+                                                    RematRegexSavePatterns.INPUT.value,
+                                                ]
                                             ),
                                             offload_src="device",
                                             offload_dst="pinned_host",

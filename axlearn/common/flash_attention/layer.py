@@ -46,6 +46,9 @@ class FlashAttention(GroupedQueryAttention):
         # Should be less than the target sequence length and a multiple of 128 on TPU.
         # TODO(tom_gunter): Expose GPU block-size (currently always 128) & unify.
         tpu_block_size: int = 512
+        # Provide an interface to set specific block sizes when known
+        # This allows mixed block sizes for TPU Splash Attention kernels
+        tpu_tuned_block_sizes: Optional[dict[str, int]] = None
         # The default GPU block-size of 128 works on most accelerators
         # NVIDIA Blackwell (B200) requires a smaller block-size
         gpu_block_size: Optional[int] = None
@@ -213,6 +216,7 @@ class FlashAttention(GroupedQueryAttention):
             kv_cache_type=kv_cache_type,
             # TODO(hanzhi-zhou): Refactor backend specific config passing.
             tpu_block_size=cfg.tpu_block_size,
+            tpu_tuned_block_sizes=cfg.tpu_tuned_block_sizes,
             gpu_block_size=cfg.gpu_block_size or 128,
             dropout_rate=cfg.dropout.rate,
             page_tables=page_indices,
@@ -377,6 +381,46 @@ class FlashBlockSizeModifier(ConfigModifier):
                 value = cast(FlashAttention.Config, value)
                 value.tpu_block_size = tpu_block_size
                 value.gpu_block_size = gpu_block_size
+
+        def enter_fn(_, value, default_kv):
+            return None if is_flash_config(value) else default_kv
+
+        cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
+        return cfg
+
+class TunedFlashBlockSizeModifier(ConfigModifier):
+    """Modifies the BlockSizes config of FlashAttention on TPU, allowing for granular control.
+    
+    This ConfigModifier is mutually exclusive with FlashBlockSizeModifier.
+    """
+
+    @config_class
+    class Config(ConfigModifier.Config):
+        """Configures TunedFlashBlockSizeModifier."""
+
+        block_q: Optional[int] = 2048
+        block_kv: Optional[int] = 2048
+        block_kv_compute: Optional[int] = 2048
+        block_q_dkv: Optional[int] = 2048
+        block_kv_dkv: Optional[int] = 2048
+        block_kv_dkv_compute: Optional[int] = 2048
+
+    def __call__(self, cfg: ConfigBase) -> ConfigBase:
+
+        def is_flash_config(cfg):
+            return isinstance(cfg, FlashAttention.Config)
+
+        def visit_fn(_, value):
+            if is_flash_config(value):
+                value = cast(FlashAttention.Config, value)
+                value.tpu_tuned_block_sizes = dict(
+                    block_q = self.config.block_q,
+                    block_kv = self.config.block_kv,
+                    block_kv_compute = self.config.block_kv_compute,
+                    block_q_dkv = self.config.block_q_dkv,
+                    block_kv_dkv = self.config.block_kv_dkv,
+                    block_kv_dkv_compute = self.config.block_kv_dkv_compute,
+                )
 
         def enter_fn(_, value, default_kv):
             return None if is_flash_config(value) else default_kv

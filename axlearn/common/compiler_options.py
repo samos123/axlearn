@@ -165,19 +165,16 @@ def default_xla_options(
             xla_tpu_prefer_async_allgather_to_allreduce="true",
             xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
             xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
-            # Sam trying out XLA perf flags, remove later
-            # Below flags did not help
-            # xla_all_gather_latency_bound_threshold_in_bytes="16777216",
-            # xla_all_reduce_latency_bound_threshold_in_bytes="16777216",
-            # xla_collective_permute_latency_bound_threshold_in_bytes="16777216",
-            # xla_tpu_data_parallel_opt_different_sized_ops="true",
             # Pipelining
             xla_should_allow_loop_variant_parameter_in_chain="true",
             xla_should_add_loop_invariant_op_in_chain="true",
             xla_tpu_enable_ici_ag_pipelining="true",
-            # Compiler options available in newer Jax versions
-            # xla_tpu_all_gather_collective_matmul_mode="post_spmd",
-            # xla_tpu_reduce_scatter_collective_matmul_mode="post_spmd",
+            # v7x flags from Maxtext
+            xla_tpu_use_single_sparse_core_for_all_gather_offload="true",
+            xla_tpu_enable_sparse_core_collective_offload_3d_all_gather="true",
+            xla_sc_disable_megacore_partitioning="true",
+            xla_tpu_use_tc_device_shape_on_sc="true",
+            xla_tpu_impure_enable_packed_bf16_math_ops="true",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.

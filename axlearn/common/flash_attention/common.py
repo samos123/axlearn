@@ -156,6 +156,7 @@ class BaseFlashAttention(Configurable):
         dropout_rate: float = 0.0
         interpret: bool = False
         tpu_block_size: int = 512
+        tpu_tuned_block_sizes: Optional[dict[str, int]] = None
         gpu_block_size: int = 128
 
     def __init__(self, cfg: Config):

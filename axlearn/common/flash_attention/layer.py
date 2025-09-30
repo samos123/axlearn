@@ -390,8 +390,17 @@ class FlashBlockSizeModifier(ConfigModifier):
 
 class TunedFlashBlockSizeModifier(ConfigModifier):
     """Modifies the BlockSizes config of FlashAttention on TPU, allowing for granular control.
+
+    Block sizes that can be overridden:
+        block_q
+        block_kv
+        block_kv_compute
+        block_kv_dkv
+        block_kv_dkv_compute
+
+    The default values for each of these blocks is set as 2048 when a value is not provided.
     
-    This ConfigModifier is mutually exclusive with FlashBlockSizeModifier.
+    TunedFlashBlockSizeModifier should not be used with FlashBlockSizeModifier.
     """
 
     @config_class

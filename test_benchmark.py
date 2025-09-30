@@ -25,7 +25,7 @@ from jax.experimental.array_serialization import serialization as array_serializ
 from jax.experimental.array_serialization import tensorstore_impl
 
 from axlearn.common import utils
-from axlearn.common.array_serialization import _async_deserialize
+from axlearn.common.array_serialization import GlobalAsyncCheckpointManager, _async_deserialize
 from axlearn.common.checkpointer import parse_step_from_dir, read_index_file
 from axlearn.common.utils import TensorSpec, infer_mesh_shape
 
@@ -183,6 +183,106 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
     return tensorstore_specs, shardings, shapes, dtypes
 
 
+def run_colocated_deserialization(tensorstore_specs, shardings, global_shapes, dtypes, cpu_devices):
+    """Deserializes the checkpoint using colocated python."""
+    print("Preloading checkpoint to CPU memory...")
+    if len(cpu_devices) > 1:
+        cpu_mesh = colocated_python.colocated_cpu_devices(thread_resources.env.physical_mesh)
+        cpu_shardings = [
+            jax.sharding.NamedSharding(cpu_mesh, sharding.spec) for sharding in shardings
+        ]
+    else:
+        cpu_shardings = [
+            jax.sharding.SingleDeviceSharding(cpu_devices[0]) for sharding in shardings
+        ]
+
+    def output_spec_fn():
+        return [
+            jax.ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding)
+            for shape, dtype, sharding in zip(global_shapes, dtypes, cpu_shardings)
+        ]
+
+    @colocated_python.colocated_python
+    def run_deserializer():
+        # Object should be created once per process.
+        # pylint: disable=protected-access
+        concurrent_bytes = 1099511627776  # 1024 GB
+        byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
+        h2d_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
+        thread_pool = ThreadPoolExecutor(10)
+
+        future_arrays = jax.tree.map(
+            functools.partial(
+                _async_deserialize,
+                byte_limiter=byte_limiter,
+                h2d_limiter=h2d_limiter,
+                single_thread_pool=thread_pool,
+            ),
+            cpu_shardings,
+            tensorstore_specs,
+            global_shapes,
+            dtypes,
+        )
+
+        async def gather_func():
+            return await asyncio.gather(*future_arrays)
+
+        result = asyncio.run(gather_func())
+        return result
+
+    run_deserializer = run_deserializer.specialize(
+        devices=cpu_devices,
+        out_specs_fn=output_spec_fn,
+    )
+
+    start_time = time.perf_counter()
+
+    preloaded_values = run_deserializer()
+    preload_time = time.perf_counter() - start_time
+    print(f"Preload completed to CPU in {preload_time:.2f} seconds")
+    print(f"Preloaded {len(preloaded_values)} arrays")
+
+    total_size = sum(a.size for a in preloaded_values)
+    print("total_size of preloaded: ", total_size)
+
+    #### calculate size of the checkpoint ####
+    total_gb = (total_size * preloaded_values[0].dtype.itemsize) / (1024**3)
+    print("total_gb: ", total_gb)
+
+    print("shardings length", len(shardings))
+
+    print("Transferring arrays to TPU...")
+    restored_values = []
+
+    start_time = time.perf_counter()
+    for val, sharding in zip(preloaded_values, shardings):
+        arr = jax.device_put(val, sharding)
+        restored_values.append(arr)
+
+    for device_array in restored_values:
+        device_array.block_until_ready()
+
+    transfer_time = time.perf_counter() - start_time
+    print(f"Transfer completed to TPU in {transfer_time:.2f} seconds")
+
+
+def run_direct_deserialization(tensorstore_specs, shardings, global_shapes, dtypes):
+    """Deserializes the checkpoint directly to device."""
+    manager = GlobalAsyncCheckpointManager()
+    start_time = time.perf_counter()
+    restored_values = manager.deserialize(
+        shardings=shardings,
+        tensorstore_specs=tensorstore_specs,
+        global_shapes=global_shapes,
+        dtypes=dtypes,
+    )
+    for arr in restored_values:
+        arr.block_until_ready()
+    total_time = time.perf_counter() - start_time
+    print(f"Deserialization completed in {total_time:.2f} seconds")
+    manager.stop()
+
+
 def main():
     ### Parse Arguments ######
     parser = argparse.ArgumentParser(description="Preload model from GCS checkpoint")
@@ -197,6 +297,9 @@ def main():
         help="GCS path to profile directory (e.g., gs://bucket/path/to/checkpoint)",
     )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument(
+        "--use_colocated_python", action="store_true", help="Enable colocated python implementation"
+    )
 
     args = parser.parse_args()
 
@@ -226,97 +329,14 @@ def main():
             args.ckpt_path, state_spec
         )
 
-        print("Preloading checkpoint to CPU memory...")
-        if len(cpu_devices) > 1:
-            cpu_mesh = colocated_python.colocated_cpu_devices(thread_resources.env.physical_mesh)
-            cpu_shardings = [
-                jax.sharding.NamedSharding(cpu_mesh, sharding.spec) for sharding in shardings
-            ]
-        else:
-            cpu_shardings = [
-                jax.sharding.SingleDeviceSharding(cpu_devices[0]) for sharding in shardings
-            ]
-
-        def output_spec_fn():
-            return [
-                jax.ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding)
-                for shape, dtype, sharding in zip(global_shapes, dtypes, cpu_shardings)
-            ]
-
-        @colocated_python.colocated_python
-        def run_deserializer():
-            # Object should be created once per process.
-            # pylint: disable=protected-access
-            concurrent_bytes = 1099511627776  # 1024 GB
-            byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
-            h2d_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
-            thread_pool = ThreadPoolExecutor(10)
-
-            future_arrays = jax.tree.map(
-                functools.partial(
-                    _async_deserialize,
-                    byte_limiter=byte_limiter,
-                    h2d_limiter=h2d_limiter,
-                    single_thread_pool=thread_pool,
-                ),
-                cpu_shardings,
-                tensorstore_specs,
-                global_shapes,
-                dtypes,
+        if args.use_colocated_python:
+            run_colocated_deserialization(
+                tensorstore_specs, shardings, global_shapes, dtypes, cpu_devices
             )
-
-            async def gather_func():
-                return await asyncio.gather(*future_arrays)
-
-            result = asyncio.run(gather_func())
-            return result
-
-        run_deserializer = run_deserializer.specialize(
-            devices=cpu_devices,
-            out_specs_fn=output_spec_fn,
-        )
-
-        start_time = time.perf_counter()
-
-        preloaded_values = run_deserializer()
-        preload_time = time.perf_counter() - start_time
-        print(f"Preload completed to CPU in {preload_time:.2f} seconds")
-        print(f"Preloaded {len(preloaded_values)} arrays")
-
-        total_size = sum(a.size for a in preloaded_values)
-        print("total_size of preloaded: ", total_size)
-
-        #### calculate size of the checkpoint ####
-        total_gb = (total_size * preloaded_values[0].dtype.itemsize) / (1024**3)
-        print("total_gb: ", total_gb)
-
-        print("shardings length", len(shardings))
-
-        print("Transferring arrays to TPU...")
-        restored_values = []
-
-        start_time = time.perf_counter()
-        for val, sharding in zip(preloaded_values, shardings):
-            arr = jax.device_put(val, sharding)
-            restored_values.append(arr)
-
-        for device_array in restored_values:
-            device_array.block_until_ready()
-
-        transfer_time = time.perf_counter() - start_time
-        print(f"Transfer completed to TPU in {transfer_time:.2f} seconds")
+        else:
+            run_direct_deserialization(tensorstore_specs, shardings, global_shapes, dtypes)
 
         jax.profiler.stop_trace()
-
-        # total_data_moved_gb = data_gb_per_device * 4
-        # throughput_gb_s = total_data_moved_gb / transfer_time
-
-        # print(f"Data per device: {data_gb_per_device:.2f} GiB")
-        # print(
-        #     "Total data transferred from host per operation:"
-        #     f" {total_data_moved_gb:.2f} GiB"
-        # )
-        # print(f"Aggregated Host -> Devices Throughput: {throughput_gb_s:.2f} GiB/s")
 
 
 if __name__ == "__main__":

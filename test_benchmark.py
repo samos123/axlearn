@@ -13,9 +13,9 @@ import argparse
 import asyncio
 import functools
 import os
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -25,7 +25,7 @@ from jax.experimental.array_serialization import serialization as array_serializ
 from jax.experimental.array_serialization import tensorstore_impl
 
 from axlearn.common import utils
-from axlearn.common.array_serialization import GlobalAsyncCheckpointManager, _async_deserialize
+from axlearn.common.array_serialization import _async_deserialize
 from axlearn.common.checkpointer import parse_step_from_dir, read_index_file
 from axlearn.common.utils import TensorSpec, infer_mesh_shape
 
@@ -36,8 +36,70 @@ array_serialization.create_async_array_from_callback = (
 )
 array_serialization.estimate_read_memory_footprint = tensorstore_impl.estimate_read_memory_footprint
 
-# Add ajax to Python path if needed
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+jax.distributed.initialize()
+
+
+def _colocated_deserialize(
+    shardings: Sequence[jax.sharding.NamedSharding],
+    tensorstore_specs: Sequence[Dict[str, Any]],
+    global_shapes: Sequence[tuple],
+    dtypes: Sequence[jnp.dtype],
+):
+    concurrent_bytes = 1099511627776
+    cpu_devices = colocated_python.colocated_cpu_devices(jax.devices())
+
+    if len(cpu_devices) > 1:
+        cpu_mesh = colocated_python.colocated_cpu_devices(thread_resources.env.physical_mesh)
+        cpu_shardings = [
+            jax.sharding.NamedSharding(cpu_mesh, sharding.spec) for sharding in shardings
+        ]
+    else:
+        cpu_shardings = [
+            jax.sharding.SingleDeviceSharding(cpu_devices[0]) for sharding in shardings
+        ]
+
+    def output_spec_fn():
+        return [
+            jax.ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding)
+            for shape, dtype, sharding in zip(global_shapes, dtypes, cpu_shardings)
+        ]
+
+    @colocated_python.colocated_python
+    def run_deserializer():
+        # Object should be created once per process.
+        # pylint: disable=protected-access
+        byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
+        h2d_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
+        thread_pool = ThreadPoolExecutor(1)
+
+        future_arrays = jax.tree.map(
+            functools.partial(
+                _async_deserialize,
+                byte_limiter=byte_limiter,
+                h2d_limiter=h2d_limiter,
+                single_thread_pool=thread_pool,
+            ),
+            cpu_shardings,
+            tensorstore_specs,
+            global_shapes,
+            dtypes,
+        )
+
+        async def gather_func():
+            return await asyncio.gather(*future_arrays)
+
+        result = asyncio.run(gather_func())
+        return result
+
+    run_deserializer = run_deserializer.specialize(
+        devices=cpu_devices,
+        out_specs_fn=output_spec_fn,
+    )
+
+    # Try running in the current event loop if one exists, otherwise create new one
+    result = run_deserializer()
+    return result
 
 
 def create_mesh(mesh_shape=(1, 1, 1, 1, 1, -1)):
@@ -48,14 +110,7 @@ def create_mesh(mesh_shape=(1, 1, 1, 1, 1, -1)):
     return jax.sharding.Mesh(devices, ("pipeline", "data", "expert", "fsdp", "seq", "model"))
 
 
-def is_learner_path(path: str) -> bool:
-    """Check if a path is part of the learner state."""
-    # Exclude all learner paths (optimizer state, ema, etc.)
-    return path.startswith("learner/")
-
-
 def create_state_spec_from_checkpoint(ckpt_path: str):
-    # pylint: disable=eval-used
     """Create a NestedTensorSpec from checkpoint index information."""
     index = read_index_file(ckpt_path)
     print(f"Read checkpoint index with {len(index)} entries")
@@ -71,6 +126,7 @@ def create_state_spec_from_checkpoint(ckpt_path: str):
             continue
 
         if isinstance(value, dict) and "shape" in value and "dtype" in value:
+            # pylint: disable=eval-used
             shape = eval(value["shape"]) if isinstance(value["shape"], str) else value["shape"]
             dtype_str = value["dtype"]
 
@@ -90,6 +146,12 @@ def create_state_spec_from_checkpoint(ckpt_path: str):
             current[keys[-1]] = TensorSpec(shape=shape, dtype=dtype)
 
     return state_spec
+
+
+def is_learner_path(path: str) -> bool:
+    """Check if a path is part of the learner state."""
+    # Exclude all learner paths (optimizer state, ema, etc.)
+    return path.startswith("learner/")
 
 
 def get_inference_partition_spec(path: str, shape: tuple) -> jax.sharding.PartitionSpec:
@@ -126,7 +188,7 @@ def get_inference_partition_spec(path: str, shape: tuple) -> jax.sharding.Partit
 
     # For other parameters (embeddings, layer norms, etc.), shard on fsdp axis
     if len(shape) >= 1:
-        return jax.sharding.PartitionSpec(fsdp_axis)
+        return jax.sharding.PartitionSpec(tp_axis)
 
     # For scalars or unknown cases, no sharding
     return jax.sharding.PartitionSpec()
@@ -142,12 +204,6 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
 
     # Get current mesh for creating shardings
     mesh = thread_resources.env.physical_mesh
-    print("thread resources mesh: ", mesh)
-
-    devices = jax.experimental.mesh_utils.create_device_mesh((4, 1), devices=jax.local_devices())
-    mesh_created = jax.sharding.Mesh(devices, axis_names=("data", "model"))
-    print("mesh_created: ", mesh_created)
-
     if not mesh.shape:
         raise RuntimeError("Checkpoint restoration must take place within the context of a Mesh")
 
@@ -161,19 +217,11 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
             gda_path = os.path.join(ckpt_dir, "gda", path)
             tensorstore_spec = array_serialization.get_tensorstore_spec(gda_path)
 
-            # Create sharding spec based on tensor rank.
-            if len(value.shape) >= 2:
-                partition_spec = jax.sharding.PartitionSpec("data", "model")
-            elif len(value.shape) == 1:
-                partition_spec = jax.sharding.PartitionSpec("data")
-            else:
-                partition_spec = jax.sharding.PartitionSpec()
+            # Get inference-friendly partition spec based on tensor path and shape
+            partition_spec = get_inference_partition_spec(path, value.shape)
 
             # Create sharding with the appropriate partition spec
-            sharding = jax.sharding.NamedSharding(mesh_created, partition_spec)
-            print("Is addressable?", sharding.is_fully_addressable)
-            print("Sharding devices:", sharding.device_set)
-            print("Addressable subset:", sharding.addressable_devices)
+            sharding = jax.sharding.NamedSharding(mesh, partition_spec)
 
             tensorstore_specs.append(tensorstore_spec)
             shapes.append(value.shape)
@@ -183,160 +231,65 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
     return tensorstore_specs, shardings, shapes, dtypes
 
 
-def run_colocated_deserialization(tensorstore_specs, shardings, global_shapes, dtypes, cpu_devices):
-    """Deserializes the checkpoint using colocated python."""
-    print("Preloading checkpoint to CPU memory...")
-    if len(cpu_devices) > 1:
-        cpu_mesh = colocated_python.colocated_cpu_devices(thread_resources.env.physical_mesh)
-        cpu_shardings = [
-            jax.sharding.NamedSharding(cpu_mesh, sharding.spec) for sharding in shardings
-        ]
-    else:
-        cpu_shardings = [
-            jax.sharding.SingleDeviceSharding(cpu_devices[0]) for sharding in shardings
-        ]
+def load_model(ckpt_path: str):
+    """Main function to preload a model from GCS checkpoint."""
+    step = parse_step_from_dir(ckpt_path)
+    print(f"Starting model preload from: {ckpt_path} (step {step})")
 
-    def output_spec_fn():
-        return [
-            jax.ShapeDtypeStruct(shape=shape, dtype=dtype, sharding=sharding)
-            for shape, dtype, sharding in zip(global_shapes, dtypes, cpu_shardings)
-        ]
+    if not ckpt_path.startswith("gs://"):
+        raise ValueError(f"Only GCS paths (gs://) are supported, got: {ckpt_path}")
 
-    @colocated_python.colocated_python
-    def run_deserializer():
-        # Object should be created once per process.
-        # pylint: disable=protected-access
-        concurrent_bytes = 1099511627776  # 1024 GB
-        byte_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
-        h2d_limiter = tensorstore_impl._LimitInFlightBytes(concurrent_bytes)
-        thread_pool = ThreadPoolExecutor(10)
+    with create_mesh():
+        print("Reading checkpoint structure...")
+        state_spec = create_state_spec_from_checkpoint(ckpt_path)
 
-        future_arrays = jax.tree.map(
-            functools.partial(
-                _async_deserialize,
-                byte_limiter=byte_limiter,
-                h2d_limiter=h2d_limiter,
-                single_thread_pool=thread_pool,
-            ),
-            cpu_shardings,
-            tensorstore_specs,
-            global_shapes,
-            dtypes,
+        print(f"Found {len(jax.tree_util.tree_leaves(state_spec))} tensors in checkpoint")
+
+        tensorstore_specs, shardings, shapes, dtypes = create_checkpoint_spec_from_state(
+            ckpt_path, state_spec
         )
 
-        async def gather_func():
-            return await asyncio.gather(*future_arrays)
+        print("Preloading checkpoint to CPU memory...")
+        start_time = time.perf_counter()
 
-        result = asyncio.run(gather_func())
-        return result
+        preloaded_values = _colocated_deserialize(
+            shardings=shardings,
+            tensorstore_specs=tensorstore_specs,
+            global_shapes=shapes,
+            dtypes=dtypes,
+        )
 
-    run_deserializer = run_deserializer.specialize(
-        devices=cpu_devices,
-        out_specs_fn=output_spec_fn,
-    )
+        preload_time = time.perf_counter() - start_time
+        print(f"Preload completed in {preload_time:.2f} seconds")
+        print(f"Preloaded {len(preloaded_values)} arrays")
 
-    start_time = time.perf_counter()
+        print("Transferring arrays to TPU...")
+        start_time = time.perf_counter()
+        restored_values = [jax.device_put(v, s) for v, s in zip(preloaded_values, shardings)]
+        print(f"len(restored_values) = {len(restored_values)})")
+        transfer_time = time.perf_counter() - start_time
+        print(f"Transfer completed in {transfer_time:.2f} seconds")
 
-    preloaded_values = run_deserializer()
-    preload_time = time.perf_counter() - start_time
-    print(f"Preload completed to CPU in {preload_time:.2f} seconds")
-    print(f"Preloaded {len(preloaded_values)} arrays")
-
-    total_size = sum(a.size for a in preloaded_values)
-    print("total_size of preloaded: ", total_size)
-
-    #### calculate size of the checkpoint ####
-    total_gb = (total_size * preloaded_values[0].dtype.itemsize) / (1024**3)
-    print("total_gb: ", total_gb)
-
-    print("shardings length", len(shardings))
-
-    print("Transferring arrays to TPU...")
-    restored_values = []
-
-    start_time = time.perf_counter()
-    for val, sharding in zip(preloaded_values, shardings):
-        arr = jax.device_put(val, sharding)
-        restored_values.append(arr)
-
-    for device_array in restored_values:
-        device_array.block_until_ready()
-
-    transfer_time = time.perf_counter() - start_time
-    print(f"Transfer completed to TPU in {transfer_time:.2f} seconds")
-
-
-def run_direct_deserialization(tensorstore_specs, shardings, global_shapes, dtypes):
-    """Deserializes the checkpoint directly to device."""
-    manager = GlobalAsyncCheckpointManager()
-    start_time = time.perf_counter()
-    restored_values = manager.deserialize(
-        shardings=shardings,
-        tensorstore_specs=tensorstore_specs,
-        global_shapes=global_shapes,
-        dtypes=dtypes,
-    )
-    for arr in restored_values:
-        arr.block_until_ready()
-    total_time = time.perf_counter() - start_time
-    print(f"Deserialization completed in {total_time:.2f} seconds")
-    manager.stop()
+        return preloaded_values
 
 
 def main():
-    ### Parse Arguments ######
     parser = argparse.ArgumentParser(description="Preload model from GCS checkpoint")
     parser.add_argument(
         "--ckpt_path",
         required=True,
         help="GCS path to checkpoint directory (e.g., gs://bucket/path/to/checkpoint)",
     )
-    parser.add_argument(
-        "--profile_dir",
-        required=True,
-        help="GCS path to profile directory (e.g., gs://bucket/path/to/checkpoint)",
-    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
-    parser.add_argument(
-        "--use_colocated_python", action="store_true", help="Enable colocated python implementation"
-    )
 
     args = parser.parse_args()
 
-    ##### Getting the step from checkpointer #####
-    step = parse_step_from_dir(args.ckpt_path)
-    print(f"Starting model preload from: {args.ckpt_path} (step {step})")
+    print(f"JAX devices: {jax.devices()}")
 
-    if not args.ckpt_path.startswith("gs://"):
-        raise ValueError(f"Only GCS paths (gs://) are supported, got: {args.ckpt_path}")
+    loaded_values = load_model(ckpt_path=args.ckpt_path)
 
-    #### colocated code  #######
-    devices = jax.devices()
-    print(len(devices))
-    cpu_devices = colocated_python.colocated_cpu_devices(devices)
-    print(cpu_devices)
-    local_devices = jax.local_devices()
-    print("local devices: ", len(local_devices))
-
-    with create_mesh():
-        jax.profiler.start_trace(args.profile_dir)
-        print("Reading checkpoint structure...")
-        state_spec = create_state_spec_from_checkpoint(args.ckpt_path)
-
-        print(f"Found {len(jax.tree_util.tree_leaves(state_spec))} tensors in checkpoint")
-
-        tensorstore_specs, shardings, global_shapes, dtypes = create_checkpoint_spec_from_state(
-            args.ckpt_path, state_spec
-        )
-
-        if args.use_colocated_python:
-            run_colocated_deserialization(
-                tensorstore_specs, shardings, global_shapes, dtypes, cpu_devices
-            )
-        else:
-            run_direct_deserialization(tensorstore_specs, shardings, global_shapes, dtypes)
-
-        jax.profiler.stop_trace()
+    print(f"✅ Successfully loaded model from {args.ckpt_path}")
+    print(f"   Total parameters: {sum(x.size for x in loaded_values):,}")
 
 
 if __name__ == "__main__":

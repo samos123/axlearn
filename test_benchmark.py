@@ -48,6 +48,7 @@ def _colocated_deserialize(
 ):
     concurrent_bytes = 1099511627776
     cpu_devices = colocated_python.colocated_cpu_devices(jax.devices())
+    print(f"{cpu_devices=}")
 
     if len(cpu_devices) > 1:
         cpu_mesh = colocated_python.colocated_cpu_devices(thread_resources.env.physical_mesh)

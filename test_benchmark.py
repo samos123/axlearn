@@ -105,7 +105,7 @@ def _colocated_deserialize(
 def create_mesh(mesh_shape=(1, 1, 1, 1, 1, -1)):
     """Create a JAX mesh for distributed computation."""
     inferred_mesh_shape = infer_mesh_shape(mesh_shape)
-    print(f"Using mesh shape {inferred_mesh_shape} for {len(jax.local_devices())} devices")
+    print(f"Using mesh shape {inferred_mesh_shape} for {len(jax.devices())} devices")
     devices = mesh_utils.create_device_mesh(inferred_mesh_shape)
     return jax.sharding.Mesh(devices, ("pipeline", "data", "expert", "fsdp", "seq", "model"))
 
@@ -154,46 +154,6 @@ def is_learner_path(path: str) -> bool:
     return path.startswith("learner/")
 
 
-def get_inference_partition_spec(path: str, shape: tuple) -> jax.sharding.PartitionSpec:
-    """Get inference-friendly partition spec based on tensor path and shape.
-
-    Based on set_inference_partition_spec function logic:
-    - Attention weights: shard on fsdp and model axes
-    - Feed-forward linear1 weights: shard on (fsdp, model)
-    - Feed-forward linear2 weights: shard on (model, fsdp)
-    - Other parameters: shard on fsdp axis only
-    """
-    fsdp_axis = "fsdp"
-    tp_axis = "model"
-
-    # Check if this is an attention weight
-    if any(attn_key in path for attn_key in ["self_attention", "cross_attention"]):
-        if any(
-            weight_key in path for weight_key in ["i_proj", "o_proj", "q_proj", "k_proj", "v_proj"]
-        ):
-            # Attention projection weights: shard on (fsdp, model)
-            if len(shape) >= 2:
-                return jax.sharding.PartitionSpec(fsdp_axis, tp_axis)
-
-    # Check if this is a feed-forward layer weight
-    elif "feed_forward" in path:
-        if "linear1" in path and "weight" in path:
-            # Feed-forward linear1 weights: shard on (fsdp, model)
-            if len(shape) >= 2:
-                return jax.sharding.PartitionSpec(fsdp_axis, tp_axis)
-        elif "linear2" in path and "weight" in path:
-            # Feed-forward linear2 weights: shard on (model, fsdp)
-            if len(shape) >= 2:
-                return jax.sharding.PartitionSpec(tp_axis, fsdp_axis)
-
-    # For other parameters (embeddings, layer norms, etc.), shard on fsdp axis
-    if len(shape) >= 1:
-        return jax.sharding.PartitionSpec(tp_axis)
-
-    # For scalars or unknown cases, no sharding
-    return jax.sharding.PartitionSpec()
-
-
 def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
     """Create checkpoint spec following the pattern from TensorStoreStateStorage._get_spec."""
 
@@ -218,7 +178,12 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
             tensorstore_spec = array_serialization.get_tensorstore_spec(gda_path)
 
             # Get inference-friendly partition spec based on tensor path and shape
-            partition_spec = get_inference_partition_spec(path, value.shape)
+            model_axis_size = mesh.shape.get("model", 1)
+            # Replicate small 1D tensors that cannot be sharded.
+            if len(value.shape) == 1 and value.shape[0] < model_axis_size:
+                partition_spec = jax.sharding.PartitionSpec()
+            else:
+                partition_spec = jax.sharding.PartitionSpec("model")
 
             # Create sharding with the appropriate partition spec
             sharding = jax.sharding.NamedSharding(mesh, partition_spec)
@@ -265,12 +230,17 @@ def load_model(ckpt_path: str):
 
         print("Transferring arrays to TPU...")
         start_time = time.perf_counter()
-        restored_values = [jax.device_put(v, s) for v, s in zip(preloaded_values, shardings)]
-        print(f"len(restored_values) = {len(restored_values)})")
+
+        # Create a mesh with only local devices.
+        local_mesh = jax.sharding.Mesh(jax.local_devices(), ("model",))
+        # Recreate shardings with the local mesh, which is what device_put expects.
+        local_shardings = [jax.sharding.NamedSharding(local_mesh, s.spec) for s in shardings]
+        restored_values = [jax.device_put(x, s) for x, s in zip(preloaded_values, local_shardings)]
+
         transfer_time = time.perf_counter() - start_time
         print(f"Transfer completed in {transfer_time:.2f} seconds")
 
-        return preloaded_values
+        return restored_values
 
 
 def main():

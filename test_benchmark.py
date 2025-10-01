@@ -13,12 +13,14 @@ import argparse
 import asyncio
 import functools
 import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Sequence
 
 import jax
 import jax.numpy as jnp
+import pathwaysutils
 from jax._src.mesh import thread_resources
 from jax.experimental import colocated_python, mesh_utils
 from jax.experimental.array_serialization import serialization as array_serialization
@@ -35,9 +37,6 @@ array_serialization.create_async_array_from_callback = (
     tensorstore_impl._create_async_array_from_callback
 )
 array_serialization.estimate_read_memory_footprint = tensorstore_impl.estimate_read_memory_footprint
-
-
-jax.distributed.initialize()
 
 
 def _colocated_deserialize(
@@ -323,14 +322,24 @@ def main():
     )
     args = parser.parse_args()
 
+    if os.getenv("JAX_PLATFORMS") == "proxy":
+        pathwaysutils.initialize()
+    else:
+        jax.distributed.initialize()
+
     print(f"JAX devices: {jax.devices()}")
 
     print("--- Running colocated benchmark ---")
     start_colocated_time = time.perf_counter()
     loaded_values_colocated = load_model_colocated(ckpt_path=args.ckpt_path)
+    loaded_values_colocated.block_until_ready()
     print(f"✅ Successfully loaded model from {args.ckpt_path}")
     print(f"Deserialize took {time.perf_counter() - start_colocated_time:.2f} seconds")
     print(f"   Total parameters: {sum(x.size for x in loaded_values_colocated):,}")
+
+    # Exit early if on pathways
+    if os.getenv("JAX_PLATFORMS") == "proxy":
+        sys.exit(0)
 
     print("\n--- Running default benchmark ---")
     start_default_time = time.perf_counter()

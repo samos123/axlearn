@@ -49,15 +49,16 @@ _COLOCATED_CONTAINER_PORT = 50051
 _PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
 
 # The docker image used by pathways proxy container.
-_PATHWAYS_PROXY_IMAGE = (
-    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server_maxtext:latest"
-)
+# pylint: disable=line-too-long
+_PATHWAYS_PROXY_IMAGE = "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server_maxtext:latest"
 # The docker image used by pathways resource manager container and worker container.
 _PATHWAYS_SERVER_IMAGE = (
     "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server_maxtext:latest"
 )
 _COLOCATED_PYTHON_IMAGE = (
-    "gcr.io/cloud-tpu-multipod-dev/ksadi_sidecar_maxtext:latest"
+    # "gcr.io/cloud-tpu-multipod-dev/ksadi_sidecar_maxtext:latest"
+    # pylint: disable=line-too-long
+    "gcr.io/cloud-tpu-multipod-dev/sujinesh_sidecar_debug@sha256:19abcd94addb6ff2749c299d6b0cc4748f27a4ab8759a18b466d0bdd3e5b71e8"
 )
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
@@ -69,7 +70,6 @@ _PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pathways-head"
 _PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
 
 _COLOCATED_PYTHON_SIDECAR_NAME = "colocated-python-sidecar"
-
 
 
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
@@ -391,23 +391,21 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
                 ],
             ),
         ]
-    
+
     def _colocated_python_container(self):
-
-        return  dict(
-                name=_COLOCATED_PYTHON_SIDECAR_NAME,
-                image=_COLOCATED_PYTHON_IMAGE,
-                restartPolicy="Always",
-                env=[
-                    {
-                        "name": "GRPC_SERVER_ADDRESS",
-                        "value": f"0.0.0.0:{_COLOCATED_CONTAINER_PORT}",
-                    },
-                ],
-                imagePullPolicy="Always",
-                ports=[dict(containerPort=_COLOCATED_CONTAINER_PORT)],
-
-            )
+        return dict(
+            name=_COLOCATED_PYTHON_SIDECAR_NAME,
+            image=_COLOCATED_PYTHON_IMAGE,
+            restartPolicy="Always",
+            env=[
+                {
+                    "name": "GRPC_SERVER_ADDRESS",
+                    "value": f"0.0.0.0:{_COLOCATED_CONTAINER_PORT}",
+                },
+            ],
+            imagePullPolicy="Always",
+            ports=[dict(containerPort=_COLOCATED_CONTAINER_PORT)],
+        )
 
     def _build_pathways_head_pod(self) -> Nested[Any]:
         """Builds a pathways head pod. The pod includes a head container,
@@ -589,8 +587,8 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         pod_spec["containers"] = [
             self._build_pathways_worker_container(pathways_worker_replicated_job_index)
         ]
-        pod_spec["initContainers"]=[self._colocated_python_container()]
-        
+        pod_spec["initContainers"] = [self._colocated_python_container()]
+
         worker_pod["spec"] = pod_spec
 
         # Service account for nodes.

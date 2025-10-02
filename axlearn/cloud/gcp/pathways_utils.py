@@ -53,12 +53,14 @@ _PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
 # _PATHWAYS_PROXY_IMAGE = "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server_maxtext:latest"
 _PATHWAYS_PROXY_IMAGE = (
     # pylint: disable=line-too-long
-    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server@sha256:73516e07b3ccd9af487100c55cff35b7089025b4909847fd234f0f768d99ebea"
+    # "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server@sha256:73516e07b3ccd9af487100c55cff35b7089025b4909847fd234f0f768d99ebea"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server:latest"
 )
 # The docker image used by pathways resource manager container and worker container.
 _PATHWAYS_SERVER_IMAGE = (
     # pylint: disable=line-too-long
-    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server@sha256:fde763e2bae514d0fa758840e501b71a9ea48781dddafa5d8ed3a0fa316fd1ae"
+    # "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server@sha256:fde763e2bae514d0fa758840e501b71a9ea48781dddafa5d8ed3a0fa316fd1ae"
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server:latest"
     # "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server_maxtext:latest"
 )
 _COLOCATED_PYTHON_IMAGE = (
@@ -559,6 +561,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--resource_manager_address={pathways_head_address}:"
             + f"{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--gcs_scratch_location={cfg.output_dir}/pathways-staging",
+            # Recycling host memory gives a slight increase in performance.
+            "--tpu_pinned_host_allocation_recycle=true",
+            # The flag below is needed for better H2D performance.
+            # Rule of thumb: 3x the shard size. So 128GB to be safe.
+            # Decrease if you start running out of host memory on TPU VMs.
+            "--tpu_premapped_buffer_size=137438953472",
         ]
         mega_scale_args = xla_flags_from_options(self._mxla_options).split()
         worker_container["args"].extend(mega_scale_args)

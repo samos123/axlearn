@@ -323,6 +323,10 @@ def main():
     print(f"JAX devices: {jax.devices()}")
 
     print("--- Running colocated benchmark ---")
+    # Extract profile dir from ckpt_path. The profile dir should be gs://bucket/profiles/
+    hostname = os.uname().nodename
+    profile_dir = f"gs://{args.ckpt_path.split('/')[2]}/profiles/{hostname}"
+    jax.profiler.start_trace(log_dir=profile_dir)
     start_colocated_time = time.perf_counter()
     loaded_values_colocated = load_model_colocated(ckpt_path=args.ckpt_path)
     for x in loaded_values_colocated:
@@ -330,6 +334,7 @@ def main():
     print(f"✅ Successfully loaded model from {args.ckpt_path}")
     print(f"Deserialize took {time.perf_counter() - start_colocated_time:.2f} seconds")
     print(f"   Total parameters: {sum(x.size for x in loaded_values_colocated):,}")
+    jax.profiler.stop_trace()
 
     # Exit early if on pathways
     if os.getenv("JAX_PLATFORMS") == "proxy":

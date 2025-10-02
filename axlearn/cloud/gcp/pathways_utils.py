@@ -66,7 +66,7 @@ _PATHWAYS_SERVER_IMAGE = (
 _COLOCATED_PYTHON_IMAGE = (
     # "gcr.io/cloud-tpu-multipod-dev/ksadi_sidecar_maxtext:latest"
     # pylint: disable=line-too-long
-    "us-docker.pkg.dev/cloud-tpu-multipod-dev/colocated-images/sam:v6"
+    "us-docker.pkg.dev/cloud-tpu-multipod-dev/colocated-images/sam:v7"
     # "us-docker.pkg.dev/cloud-tpu-multipod-dev/colocated-images/lk-colocated-image:latest"
     # "gcr.io/cloud-tpu-multipod-dev/sujinesh_sidecar_debug@sha256:19abcd94addb6ff2749c299d6b0cc4748f27a4ab8759a18b466d0bdd3e5b71e8"
 )

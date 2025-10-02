@@ -428,6 +428,7 @@ async def _async_deserialize(
         requested_domain = ts.IndexTransform(input_shape=shape)[index].domain
         restricted_domain = t.domain.intersect(requested_domain)
         requested_bytes = tensorstore_impl.estimate_read_memory_footprint(t, restricted_domain)
+        start_read = time.time()
         # Limit the bytes read for every shard.
         await byte_limiter.wait_for_bytes(requested_bytes)
         read_ts = t[restricted_domain]
@@ -447,6 +448,11 @@ async def _async_deserialize(
         await ts.array(out)[ts.d[:].translate_to[requested_domain.origin]][restricted_domain].write(
             read_ts
         )
+        logging.info(
+            "reading %f MB took %.2f seconds",
+            requested_bytes / 1024 / 1024,
+            time.time() - start_read,
+        )
 
         # Convert to jnp array so that layouts are initialized properly for
         # sub-byte dtypes.
@@ -464,9 +470,15 @@ async def _async_deserialize(
             dll, jax.sharding.SingleDeviceSharding(device, memory_kind=in_sharding.memory_kind)
         )
         try:
+            device_put_start = time.time()
             await h2d_limiter.wait_for_bytes(out_size)
             result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
             await h2d_limiter.release_bytes(out_size)
+            logging.info(
+                "device_put %f MB took %.2f seconds",
+                out.size * out.dtype.itemsize / 1024 / 1024,
+                device_put_start - time.time(),
+            )
         except ValueError as e:
             if "Requested more bytes than we reserved" not in str(e):
                 raise e  # Raise if it's not the type of error we expect.

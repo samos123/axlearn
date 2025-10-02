@@ -1,7 +1,7 @@
 # Use the JAX image with the custom-built sidecar as the base.
 # FROM  gcr.io/cloud-tpu-multipod-dev/sujinesh_sidecar_debug@sha256:19abcd94addb6ff2749c299d6b0cc4748f27a4ab8759a18b466d0bdd3e5b71e8
-FROM gcr.io/cloud-tpu-multipod-dev/sujinesh_sidecar_debug@sha256:19abcd94addb6ff2749c299d6b0cc4748f27a4ab8759a18b466d0bdd3e5b71e8
-# FROM us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/sidecar:python_3.10-jax_0.6.2
+# FROM gcr.io/cloud-tpu-multipod-dev/sujinesh_sidecar_debug@sha256:19abcd94addb6ff2749c299d6b0cc4748f27a4ab8759a18b466d0bdd3e5b71e8
+FROM us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/sidecar:python_3.10-jax_0.6.2
 # Defines a build argument for the requirements file. This contains the user's custom
 
 # Set the working directory (this is already inherited)

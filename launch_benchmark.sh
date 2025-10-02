@@ -4,6 +4,8 @@ export CHECKPOINT_DIR="gs://${BUCKET}/axlearn-fuji-v3-70b/checkpoints/step_00000
 # Generate a random ID
 export RANDOM_CHARS=$(LC_CTYPE=C openssl rand -base64 12 | tr -dc 'a-z0-9' | head -c 4 ; echo)
 export PROFILE_DIR="gs://${BUCKET}/profiles/${RANDOM_CHARS}/"
+# export RUNNER_NAME=gke_tpu_single
+export RUNNER_NAME=gke_tpu_pathways
 
 # check if environment variable JAX_PLATFORMS equals proxy
 if [[ "$JAX_PLATFORMS" == "proxy" ]]; then
@@ -14,10 +16,10 @@ else
 
 export CLUSTER=$(axlearn gcp config | grep gke_cluster | \
                  awk '{ print $3 }' | tr -d  '"')
-
+  #--queue=multislice-queue \
 axlearn gcp launch run --cluster=$CLUSTER \
-        --runner_name gke_tpu_single  --queue=multislice-queue \
-        --name=$USER-colocated-benchmark \
+        --runner_name ${RUNNER_NAME} \
+        --name=$USER-2 \
         --instance_type="tpu-v5p-32" \
         --reservation="cloudtpu-20240716121201-595617744" \
         --num_replicas=1 \

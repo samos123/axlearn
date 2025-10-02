@@ -45,9 +45,11 @@ def _colocated_deserialize(
 
     if len(cpu_devices) > 1:
         cpu_mesh = colocated_python.colocated_cpu_devices(thread_resources.env.physical_mesh)
+        print(f"{cpu_mesh=}")
         cpu_shardings = [
             jax.sharding.NamedSharding(cpu_mesh, sharding.spec) for sharding in shardings
         ]
+        print(f"{cpu_shardings=}")
     else:
         cpu_shardings = [
             jax.sharding.SingleDeviceSharding(cpu_devices[0]) for sharding in shardings

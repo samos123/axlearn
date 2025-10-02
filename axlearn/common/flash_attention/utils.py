@@ -1,7 +1,7 @@
 # Copyright © 2023 Apple Inc.
 
 """Implements FlashAttention kernel dispatch."""
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from absl import logging
 
@@ -60,6 +60,7 @@ def flash_attention_implementation(
     gpu_block_size: int = 128,
     dropout_rate: Optional[float] = 0.0,
     page_tables: Optional[Tensor] = None,
+    backend_overrides: Optional[dict[str, Any]] = None,
 ) -> Optional[BaseFlashAttention]:
     """Returns a jitted "flash" multihead-attention implementation for the given backend.
 
@@ -98,6 +99,7 @@ def flash_attention_implementation(
             check BasePagedAttention.__call__ for more details.
             Only needed for PagedAttention, and passing `None`
             when running standard flash attention.
+        backend_overrides: Backend and kernel specific config overrides.
 
     Returns:
         A jitted function implementing multi-head attention for the given backend.
@@ -127,6 +129,7 @@ def flash_attention_implementation(
         tpu_block_size=tpu_block_size,
         tpu_tuned_block_sizes=tpu_tuned_block_sizes,
         gpu_block_size=gpu_block_size,
+        backend_overrides=backend_overrides,
     )
     input_batch = dict(
         query=query,

@@ -6,7 +6,8 @@ import threading
 from typing import Optional
 
 import jax.numpy as jnp
-from absl.testing import absltest, parameterized
+import pytest
+from absl.testing import parameterized
 
 from axlearn.common.config import (
     REQUIRED,
@@ -276,4 +277,4 @@ class TestConfigMapCache(parameterized.TestCase):
 
 
 if __name__ == "__main__":
-    absltest.main()
+    pytest.main()

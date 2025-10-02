@@ -50,15 +50,22 @@ _PATHWAYS_IMAGE_TAG = "disable_settings_20250701"
 
 # The docker image used by pathways proxy container.
 # pylint: disable=line-too-long
-_PATHWAYS_PROXY_IMAGE = "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server_maxtext:latest"
+# _PATHWAYS_PROXY_IMAGE = "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server_maxtext:latest"
+_PATHWAYS_PROXY_IMAGE = (
+    # pylint: disable=line-too-long
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_proxy_server@sha256:73516e07b3ccd9af487100c55cff35b7089025b4909847fd234f0f768d99ebea"
+)
 # The docker image used by pathways resource manager container and worker container.
 _PATHWAYS_SERVER_IMAGE = (
-    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server_maxtext:latest"
+    # pylint: disable=line-too-long
+    "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server@sha256:fde763e2bae514d0fa758840e501b71a9ea48781dddafa5d8ed3a0fa316fd1ae"
+    # "us-docker.pkg.dev/cloud-tpu-v2-images-dev/pathways/gke/ksadi/unsanitized_server_maxtext:latest"
 )
 _COLOCATED_PYTHON_IMAGE = (
     # "gcr.io/cloud-tpu-multipod-dev/ksadi_sidecar_maxtext:latest"
     # pylint: disable=line-too-long
-    "gcr.io/cloud-tpu-multipod-dev/sujinesh_sidecar_debug@sha256:19abcd94addb6ff2749c299d6b0cc4748f27a4ab8759a18b466d0bdd3e5b71e8"
+    "us-docker.pkg.dev/cloud-tpu-multipod-dev/colocated-images/lk-colocated-image:latest"
+    # "gcr.io/cloud-tpu-multipod-dev/sujinesh_sidecar_debug@sha256:19abcd94addb6ff2749c299d6b0cc4748f27a4ab8759a18b466d0bdd3e5b71e8"
 )
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
@@ -352,6 +359,7 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             f"--resource_manager_address=localhost:{_PATHWAYS_RESOURCE_MANAGER_PORT}",
             f"--server_port={_PATHWAYS_PROXY_PORT}",
             f"--gcs_scratch_location={staging_location}",
+            "--sidecar_name=external",
         ]
         cmd_args.extend(xla_flags_from_options(self._xla_options).split())
 

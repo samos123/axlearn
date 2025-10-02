@@ -332,7 +332,8 @@ def main():
     print("--- Running colocated benchmark ---")
     start_colocated_time = time.perf_counter()
     loaded_values_colocated = load_model_colocated(ckpt_path=args.ckpt_path)
-    loaded_values_colocated.block_until_ready()
+    for x in loaded_values_colocated:
+        x.block_until_ready()
     print(f"✅ Successfully loaded model from {args.ckpt_path}")
     print(f"Deserialize took {time.perf_counter() - start_colocated_time:.2f} seconds")
     print(f"   Total parameters: {sum(x.size for x in loaded_values_colocated):,}")

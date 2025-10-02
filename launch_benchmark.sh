@@ -6,6 +6,7 @@ export RANDOM_CHARS=$(LC_CTYPE=C openssl rand -base64 12 | tr -dc 'a-z0-9' | hea
 export PROFILE_DIR="gs://${BUCKET}/profiles/${RANDOM_CHARS}/"
 # export RUNNER_NAME=gke_tpu_single
 export RUNNER_NAME=gke_tpu_pathways
+export JOBSET_NAME=${JOBSET_NAME:-$USER}
 
 # check if environment variable JAX_PLATFORMS equals proxy
 if [[ "$JAX_PLATFORMS" == "proxy" ]]; then
@@ -19,7 +20,7 @@ export CLUSTER=$(axlearn gcp config | grep gke_cluster | \
   #--queue=multislice-queue \
 axlearn gcp launch run --cluster=$CLUSTER \
         --runner_name ${RUNNER_NAME} \
-        --name=$USER-2 \
+        --name=${JOBSET_NAME} \
         --instance_type="tpu-v5p-32" \
         --reservation="cloudtpu-20240716121201-595617744" \
         --num_replicas=1 \

@@ -31,13 +31,6 @@ from axlearn.common.array_serialization import _async_deserialize
 from axlearn.common.checkpointer import parse_step_from_dir, read_index_file
 from axlearn.common.utils import TensorSpec, infer_mesh_shape
 
-# Patch for jax 0.6.2
-# pylint: disable=protected-access
-array_serialization.create_async_array_from_callback = (
-    tensorstore_impl._create_async_array_from_callback
-)
-array_serialization.estimate_read_memory_footprint = tensorstore_impl.estimate_read_memory_footprint
-
 
 def _colocated_deserialize(
     shardings: Sequence[jax.sharding.NamedSharding],

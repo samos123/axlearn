@@ -35,7 +35,7 @@ import tensorstore as ts
 from absl import logging
 from jax._src import array, typing
 from jax._src.layout import Layout
-from jax.experimental.array_serialization import serialization
+from jax.experimental.array_serialization import serialization, tensorstore_impl
 
 from axlearn.common.utils import Tensor
 
@@ -427,7 +427,7 @@ async def _async_deserialize(
     async def cb(index: array.Index, device: jax.Device):
         requested_domain = ts.IndexTransform(input_shape=shape)[index].domain
         restricted_domain = t.domain.intersect(requested_domain)
-        requested_bytes = serialization.estimate_read_memory_footprint(t, restricted_domain)
+        requested_bytes = tensorstore_impl.estimate_read_memory_footprint(t, restricted_domain)
         # Limit the bytes read for every shard.
         await byte_limiter.wait_for_bytes(requested_bytes)
         read_ts = t[restricted_domain]
@@ -488,7 +488,8 @@ async def _async_deserialize(
         await byte_limiter.release_bytes(requested_bytes)
         return result
 
-    return await serialization.create_async_array_from_callback(shape, in_sharding, cb)
+    # pylint: disable=protected-access
+    return await tensorstore_impl._create_async_array_from_callback(shape, in_sharding, cb)
 
 
 # Reference:

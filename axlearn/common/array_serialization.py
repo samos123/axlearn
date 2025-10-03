@@ -439,12 +439,6 @@ async def _async_deserialize(
         await byte_limiter.wait_for_bytes(requested_bytes)
         with jax.profiler.TraceAnnotation("read_ts"):
             read_ts = t[restricted_domain]
-        logging.info(
-            "read_ts shape: %s, dtype: %s, size: %f MB",
-            read_ts.shape,
-            read_ts.dtype,
-            read_ts.size * read_ts.dtype.numpy_dtype.itemsize / 1024 / 1024,
-        )
         # Use ts.cast rather than np.astype since ts can perform casting on-the-fly.
         if dtype is not None:
             read_ts = ts.cast(read_ts, dtype)
@@ -463,13 +457,14 @@ async def _async_deserialize(
                 restricted_domain
             ].write(read_ts)
         logging.info(
-            "out shape: %s, dtype: %s, size: %f MB",
+            # pylint: disable=line-too-long
+            "{read_ts shape: %s, dtype: %s, size: %f MB}, {out shape: %s, dtype: %s, size: %f MB}, requested_bytes=%f MB, took %.2f seconds",
+            read_ts.shape,
+            read_ts.dtype,
+            read_ts.size * read_ts.dtype.numpy_dtype.itemsize / 1024 / 1024,
             out.shape,
             out.dtype,
             out.size * out.dtype.itemsize / 1024 / 1024,
-        )
-        logging.info(
-            "reading %f MB took %.2f seconds",
             requested_bytes / 1024 / 1024,
             time.time() - start_read,
         )

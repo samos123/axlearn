@@ -465,7 +465,7 @@ async def _async_deserialize(
     dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Format) else None
 
     context = serialization.TS_CONTEXT
-    if running_on_pathways() or os.getenv("ENABLE_GCS_GRPC") == "true":
+    if os.getenv("ENABLE_GCS_GRPC", "false") == "true":
         tensorstore_spec, context = use_gcs_grpc(tensorstore_spec)
         
     t = await ts.open(

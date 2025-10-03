@@ -32,56 +32,6 @@ from axlearn.common.checkpointer import parse_step_from_dir, read_index_file
 from axlearn.common.utils import TensorSpec, infer_mesh_shape
 
 
-def check_all_devices_ready(timeout_secs=300, poll_interval=10):
-    print("Checking if all Pathways devices are ready...")
-    try:
-        devices = jax.devices()
-        if not devices:
-            print("No devices found.")
-            return False
-
-        num_devices = len(devices)
-        print(f"Found {num_devices} virtual devices. Attempting test computation...")
-
-        # Create a mesh encompassing all devices
-        mesh = jax.sharding.Mesh(
-            mesh_utils.create_device_mesh((num_devices,)), axis_names=("data",)
-        )
-
-        # Define a simple sharded computation
-        @jax.jit
-        def check_fn(x):
-            return jax.lax.pmean(x, axis_name="data")
-
-        start_time = time.time()
-        while time.time() - start_time < timeout_secs:
-            try:
-                # Create a sharded array
-                a = jax.device_put(
-                    jnp.arange(num_devices),
-                    jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec("data")),
-                )
-                # Run the computation
-                result = check_fn(a)
-                result.block_until_ready()
-                print(f"Test computation successful. All {num_devices} devices appear ready.")
-                return True
-
-            # pylint: disable=broad-exception-caught
-            except Exception as e:
-                print(f"Test computation failed (devices might not be ready yet): {e}")
-                print(f"Retrying in {poll_interval} seconds...")
-                time.sleep(poll_interval)
-
-        print(f"Timeout: Devices not ready within {timeout_secs} seconds.")
-        return False
-
-    # pylint: disable=broad-exception-caught
-    except Exception as e:
-        print(f"Error during device readiness check: {e}")
-        return False
-
-
 def _colocated_deserialize(
     shardings: Sequence[jax.sharding.NamedSharding],
     tensorstore_specs: Sequence[Dict[str, Any]],
@@ -414,8 +364,10 @@ def main():
         jax.distributed.initialize()
 
     print(f"JAX devices: {jax.devices()}")
-    check_all_devices_ready()
-
+    # Try a simple put to all devices to verify they're ready
+    test_array = jax.device_put_replicated(jnp.ones(8), jax.devices())
+    for x in test_array:
+        x.block_until_ready()
     print("--- Running colocated benchmark ---")
     # Extract profile dir from ckpt_path. The profile dir should be gs://bucket/profiles/
     hostname = os.uname().nodename

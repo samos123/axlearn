@@ -265,8 +265,8 @@ async def _async_serialize(
     max_data_shard_degree: int,
     shard_threshold_bytes: int,
 ):
-    """Similar to `serialization.ts_impl.async_serialize`, but limiting peak host memory usage and
-    sharding along data-parallel axis.
+    """Similar to `serialization.ts_impl.async_serialize`, but limiting peak host memory
+    usage and sharding along data-parallel axis.
 
     Specifically, TensorStores are opened only for shards which correspond to the current host, and
     only if
@@ -276,7 +276,6 @@ async def _async_serialize(
     We also simplify the API slightly by assuming replica_id=0 and primary_host=0.
     Reference:
     https://github.com/google/jax/blob/595a620804e810335a870e93975a78504b2e95e5/jax/experimental/array_serialization/serialization.py#L188
-
     """
     shard_infos = _get_shard_infos(
         arr_inp,
@@ -465,17 +464,16 @@ async def _async_deserialize(
         )
     dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Format) else None
 
-    # gcs_grpc is 2x to 4x faster than gcs on read performance. And this is recommended by Google
-    # GCS team.
-    # Caveats:
-    #   - On AWS (or other non-GCP environments) accessing GCS, gcs_grpc may hit auth/network
-    #     issues due to cross-cloud constraints. So we enable this optimization on Pathways
-    #     which only runs on GCP for now.
     context = serialization.TS_CONTEXT
     if running_on_pathways() or os.getenv("ENABLE_GCS_GRPC") == "true":
         tensorstore_spec, context = use_gcs_grpc(tensorstore_spec)
-
-    t = await ts.open(tensorstore_spec, open=True, assume_metadata=False, context=context)
+        
+    t = await ts.open(
+        tensorstore_spec,
+        open=True,
+        assume_metadata=False,
+        context=context,
+    )
     shape = tuple(t.shape if global_shape is None else global_shape)
     new_shard_shape = in_sharding.shard_shape(shape)
     loop = asyncio.get_running_loop()

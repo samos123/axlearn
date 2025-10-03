@@ -318,7 +318,6 @@ class SerializerTest(parameterized.TestCase):
                 "bucket": "fake-bucket",
                 "path": f"fake-path/{time.time()}",
             }
-
             create_spec = lambda arr: {
                 "driver": "zarr",
                 "kvstore": kvstore_spec,
@@ -359,7 +358,7 @@ class SerializerTest(parameterized.TestCase):
             tensorstore_spec,
             temp_path,
         ), mock.patch(
-            f"{array_serialization.__name__}.{_ts_open}", new=mock_ts_open
+            f"{array_serialization.__name__}.ts.open", new=mock_ts_open
         ), mock.patch.dict(
             "os.environ", {"JAX_PLATFORMS": jax_platforms, "ENABLE_GCS_GRPC": enable_gcs_grpc}
         ):
@@ -391,6 +390,7 @@ class SerializerTest(parameterized.TestCase):
             should_use_grpc = jax_platforms == "proxy" or enable_gcs_grpc == "true"
             expected_driver = "gcs_grpc" if should_use_grpc else "gcs"
             self.assertEqual(spec["kvstore"]["driver"], expected_driver)
+
         # Verify the deserialized data matches the original data
         self.assertEqual(len(data), len(deserialized_data))
         for arr, d_arr in zip(data, deserialized_data):
@@ -543,7 +543,6 @@ class SerializerTest(parameterized.TestCase):
             _ShardInfo(data=data, index=index, slice_arg=None, replica_count=1).shard_coordinate(),
             expected,
         )
-
 
 if __name__ == "__main__":
     absltest.main()

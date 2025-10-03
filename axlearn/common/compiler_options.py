@@ -136,6 +136,37 @@ def default_xla_options(
             # TODO(kelvinzou): temporary workaround to avoid memory leak in megascale.
             megascale_grpc_enable_xor_tracer="false",
         )
+    if version == "v7x":
+        options.update(
+            # Many of the v7x flags are similar to v6e
+            xla_tpu_dvfs_p_state=7,
+            xla_tpu_scoped_vmem_limit_kib=65536,
+            xla_tpu_enable_sparse_core_reduce_scatter_v2="true",
+            xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
+            xla_tpu_enable_sparse_core_collective_offload_2d_all_gather="true",
+            xla_tpu_enable_all_gather_offload_tracing="true",
+            xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
+            xla_enable_async_all_gather="true",
+            xla_tpu_prefer_async_allgather_to_allreduce="true",
+            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
+        )
+
+        # Ensure pipelining is properly configured
+        options.update(
+            xla_should_allow_loop_variant_parameter_in_chain="true",
+            xla_should_add_loop_invariant_op_in_chain="true",
+            xla_tpu_enable_ici_ag_pipelining="true",
+        )
+
+        # v7x flags from MaxText, inclusing SparseCore configs
+        options.update(
+            xla_tpu_use_single_sparse_core_for_all_gather_offload="true",
+            xla_tpu_enable_sparse_core_collective_offload_3d_all_gather="true",
+            xla_sc_disable_megacore_partitioning="true",
+            xla_tpu_use_tc_device_shape_on_sc="true",
+            xla_tpu_impure_enable_packed_bf16_math_ops="true",
+        )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.
         options.update(
@@ -170,7 +201,11 @@ def default_xla_options(
             continue
         elif isinstance(v, str):
             # Allow numeric strings, time-based strings (e.g., "10m", "30s", "60m"), and bool str
-            if v.isdigit() or re.match(r"^\d+[ms]$", v.strip()) or v.strip() in ["true", "false"]:
+            if v.isdigit() or re.match(r"^\d+[ms]$", v.strip()) or v.strip() in [
+                "true",
+                "false",
+                "post_spmd" # Allow for collective matmul v2 at a later date
+            ]:
                 continue
             else:
                 raise ValueError(f"Invalid string value for option {k}: {v}")
@@ -356,7 +391,7 @@ def infer_xsc_compiler_options(
 
 
 _TPU_VERSION_ALIASES = {"v5e": "v5litepod"}
-_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e")
+_TPU_VERSIONS = ("v3", "v4", "v5litepod", "v5p", "v6e", "v7x")
 
 
 def infer_xla_performance_flags(
@@ -370,6 +405,7 @@ def infer_xla_performance_flags(
     # Therefore, we enable them selectively on mesh shapes that have model parallelism and are
     # verified to have improved performance with sparse core offloading.
     # TODO(hanzhi-zhou): Check if these flags also improve performance on fsdp=16, model=16.
+    # TODO(samuel-andersen): Validate SparseCore flags for v7x
     mesh_configurations_for_sparse_core_offloading = []
     for a, b in [(32, 8), (64, 4), (16, 8)]:
         mesh_configurations_for_sparse_core_offloading.append(dict(fsdp=a, track=b))

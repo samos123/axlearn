@@ -32,6 +32,56 @@ from axlearn.common.checkpointer import parse_step_from_dir, read_index_file
 from axlearn.common.utils import TensorSpec, infer_mesh_shape
 
 
+def check_all_devices_ready(timeout_secs=300, poll_interval=10):
+    print("Checking if all Pathways devices are ready...")
+    try:
+        devices = jax.devices()
+        if not devices:
+            print("No devices found.")
+            return False
+
+        num_devices = len(devices)
+        print(f"Found {num_devices} virtual devices. Attempting test computation...")
+
+        # Create a mesh encompassing all devices
+        mesh = jax.sharding.Mesh(
+            mesh_utils.create_device_mesh((num_devices,)), axis_names=("data",)
+        )
+
+        # Define a simple sharded computation
+        @jax.jit
+        def check_fn(x):
+            return jax.lax.pmean(x, axis_name="data")
+
+        start_time = time.time()
+        while time.time() - start_time < timeout_secs:
+            try:
+                # Create a sharded array
+                a = jax.device_put(
+                    jnp.arange(num_devices),
+                    jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec("data")),
+                )
+                # Run the computation
+                result = check_fn(a)
+                result.block_until_ready()
+                print(f"Test computation successful. All {num_devices} devices appear ready.")
+                return True
+
+            # pylint: disable=broad-exception-caught
+            except Exception as e:
+                print(f"Test computation failed (devices might not be ready yet): {e}")
+                print(f"Retrying in {poll_interval} seconds...")
+                time.sleep(poll_interval)
+
+        print(f"Timeout: Devices not ready within {timeout_secs} seconds.")
+        return False
+
+    # pylint: disable=broad-exception-caught
+    except Exception as e:
+        print(f"Error during device readiness check: {e}")
+        return False
+
+
 def _colocated_deserialize(
     shardings: Sequence[jax.sharding.NamedSharding],
     tensorstore_specs: Sequence[Dict[str, Any]],
@@ -150,6 +200,50 @@ def is_learner_path(path: str) -> bool:
     return path.startswith("learner/")
 
 
+def get_inference_partition_spec(path: str, shape: tuple) -> jax.sharding.PartitionSpec:
+    """Get inference-friendly partition spec based on tensor path and shape.
+
+    Based on set_inference_partition_spec function logic:
+    - Attention weights: shard on fsdp and model axes
+    - Feed-forward linear1 weights: shard on (fsdp, model)
+    - Feed-forward linear2 weights: shard on (model, fsdp)
+    - Other parameters: shard on fsdp axis only
+    """
+    fsdp_axis = "fsdp"
+    tp_axis = "model"
+
+    # Check if this is an attention weight
+    if any(attn_key in path for attn_key in ["self_attention", "cross_attention"]):
+        if any(
+            weight_key in path for weight_key in ["i_proj", "o_proj", "q_proj", "k_proj", "v_proj"]
+        ):
+            # Attention projection weights: shard on (fsdp, model)
+            if len(shape) >= 2:
+                return jax.sharding.PartitionSpec(fsdp_axis, tp_axis)
+
+    # Check if this is a feed-forward layer weight
+    elif "feed_forward" in path:
+        if "linear1" in path and "weight" in path:
+            # Feed-forward linear1 weights: shard on (fsdp, model)
+            if len(shape) >= 2:
+                return jax.sharding.PartitionSpec(fsdp_axis, tp_axis)
+        elif "linear2" in path and "weight" in path:
+            # Feed-forward linear2 weights: shard on (model, fsdp)
+            if len(shape) >= 2:
+                return jax.sharding.PartitionSpec(tp_axis, fsdp_axis)
+
+    # For small 1D tensors, no sharding
+    if len(shape) == 1 and shape[0] < 16:
+        return jax.sharding.PartitionSpec()
+
+    # For other parameters (embeddings, layer norms, etc.), shard on fsdp axis
+    if len(shape) >= 1:
+        return jax.sharding.PartitionSpec(tp_axis)
+
+    # For scalars or unknown cases, no sharding
+    return jax.sharding.PartitionSpec()
+
+
 def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
     """Create checkpoint spec following the pattern from TensorStoreStateStorage._get_spec."""
 
@@ -174,12 +268,13 @@ def create_checkpoint_spec_from_state(ckpt_dir: str, state_spec: dict):
             tensorstore_spec = array_serialization.get_tensorstore_spec(gda_path)
 
             # Get inference-friendly partition spec based on tensor path and shape
-            model_axis_size = mesh.shape.get("model", 1)
-            # Replicate small 1D tensors that cannot be sharded.
-            if len(value.shape) == 1 and value.shape[0] < model_axis_size:
-                partition_spec = jax.sharding.PartitionSpec()
-            else:
-                partition_spec = jax.sharding.PartitionSpec("model")
+            partition_spec = get_inference_partition_spec(path, value.shape)
+            # model_axis_size = mesh.shape.get("model", 1)
+            # # Replicate small 1D tensors that cannot be sharded.
+            # if len(value.shape) == 1 and value.shape[0] < model_axis_size:
+            #     partition_spec = jax.sharding.PartitionSpec()
+            # else:
+            #     partition_spec = jax.sharding.PartitionSpec("model")
 
             # Create sharding with the appropriate partition spec
             sharding = jax.sharding.NamedSharding(mesh, partition_spec)
@@ -296,11 +391,7 @@ def load_model_colocated(ckpt_path: str):
         print("Transferring arrays to TPU...")
         start_time = time.perf_counter()
 
-        # Create a mesh with only local devices.
-        local_mesh = jax.sharding.Mesh(jax.local_devices(), ("model",))
-        # Recreate shardings with the local mesh, which is what device_put expects.
-        local_shardings = [jax.sharding.NamedSharding(local_mesh, s.spec) for s in shardings]
-        restored_values = [jax.device_put(x, s) for x, s in zip(preloaded_values, local_shardings)]
+        restored_values = [jax.device_put(v, s) for v, s in zip(preloaded_values, shardings)]
 
         transfer_time = time.perf_counter() - start_time
         print(f"Transfer completed in {transfer_time:.2f} seconds")
@@ -323,6 +414,7 @@ def main():
         jax.distributed.initialize()
 
     print(f"JAX devices: {jax.devices()}")
+    check_all_devices_ready()
 
     print("--- Running colocated benchmark ---")
     # Extract profile dir from ckpt_path. The profile dir should be gs://bucket/profiles/

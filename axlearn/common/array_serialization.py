@@ -425,6 +425,12 @@ async def _async_deserialize(
     loop = asyncio.get_running_loop()
 
     async def cb(index: array.Index, device: jax.Device):
+        logging.info(
+            "received callback for index %s on device %s, gcs_path %s",
+            index,
+            device,
+            tensorstore_spec["kvstore"]["path"],
+        )
         requested_domain = ts.IndexTransform(input_shape=shape)[index].domain
         restricted_domain = t.domain.intersect(requested_domain)
         requested_bytes = tensorstore_impl.estimate_read_memory_footprint(t, restricted_domain)
@@ -477,7 +483,7 @@ async def _async_deserialize(
             logging.info(
                 "device_put %f MB took %.2f seconds",
                 out.size * out.dtype.itemsize / 1024 / 1024,
-                device_put_start - time.time(),
+                time.time() - device_put_start,
             )
         except ValueError as e:
             if "Requested more bytes than we reserved" not in str(e):

@@ -370,7 +370,7 @@ def main():
         x.block_until_ready()
     print("--- Running colocated benchmark ---")
     # Extract profile dir from ckpt_path. The profile dir should be gs://bucket/profiles/
-    hostname = os.uname().nodename
+    hostname = os.getenv("HOST_ADDRESS")
     profile_dir = f"gs://{args.ckpt_path.split('/')[2]}/profiles/{hostname}"
     jax.profiler.start_trace(log_dir=profile_dir)
     start_colocated_time = time.perf_counter()

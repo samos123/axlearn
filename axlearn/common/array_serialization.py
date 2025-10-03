@@ -437,7 +437,14 @@ async def _async_deserialize(
         start_read = time.time()
         # Limit the bytes read for every shard.
         await byte_limiter.wait_for_bytes(requested_bytes)
-        read_ts = t[restricted_domain]
+        with jax.profiler.TraceAnnotation("read_ts"):
+            read_ts = t[restricted_domain]
+        logging.info(
+            "read_ts shape: %s, dtype: %s, size: %f MB",
+            read_ts.shape,
+            read_ts.dtype,
+            read_ts.size * read_ts.dtype.numpy_dtype.itemsize / 1024 / 1024,
+        )
         # Use ts.cast rather than np.astype since ts can perform casting on-the-fly.
         if dtype is not None:
             read_ts = ts.cast(read_ts, dtype)
@@ -451,8 +458,15 @@ async def _async_deserialize(
             # the extra values will be filled with 0s.
             out = np.zeros(new_shard_shape, read_ts.dtype.numpy_dtype)
 
-        await ts.array(out)[ts.d[:].translate_to[requested_domain.origin]][restricted_domain].write(
-            read_ts
+        with jax.profiler.TraceAnnotation("read_ts_into_out"):
+            await ts.array(out)[ts.d[:].translate_to[requested_domain.origin]][
+                restricted_domain
+            ].write(read_ts)
+        logging.info(
+            "out shape: %s, dtype: %s, size: %f MB",
+            out.shape,
+            out.dtype,
+            out.size * out.dtype.itemsize / 1024 / 1024,
         )
         logging.info(
             "reading %f MB took %.2f seconds",
@@ -477,14 +491,15 @@ async def _async_deserialize(
         )
         try:
             device_put_start = time.time()
-            await h2d_limiter.wait_for_bytes(out_size)
-            result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
-            await h2d_limiter.release_bytes(out_size)
-            logging.info(
-                "device_put %f MB took %.2f seconds",
-                out.size * out.dtype.itemsize / 1024 / 1024,
-                time.time() - device_put_start,
-            )
+            with jax.profiler.TraceAnnotation("device_put"):
+                await h2d_limiter.wait_for_bytes(out_size)
+                result = await loop.run_in_executor(None, _blocking_device_put, out, layout)
+                await h2d_limiter.release_bytes(out_size)
+                logging.info(
+                    "device_put %f MB took %.2f seconds",
+                    out.size * out.dtype.itemsize / 1024 / 1024,
+                    time.time() - device_put_start,
+                )
         except ValueError as e:
             if "Requested more bytes than we reserved" not in str(e):
                 raise e  # Raise if it's not the type of error we expect.

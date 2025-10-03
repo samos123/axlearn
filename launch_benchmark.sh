@@ -7,6 +7,7 @@ export PROFILE_DIR="gs://${BUCKET}/profiles/${RANDOM_CHARS}/"
 # export RUNNER_NAME=gke_tpu_single
 export RUNNER_NAME=${RUNNER:-"gke_tpu_pathways"}
 export JOBSET_NAME=${JOBSET_NAME:-$USER}
+export INSTANCE_TYPE=${INSTANCE_TYPE:-"tpu-v5p-32"}
 
 # check if environment variable JAX_PLATFORMS equals proxy
 if [[ "$JAX_PLATFORMS" == "proxy" ]]; then
@@ -21,7 +22,7 @@ export CLUSTER=$(axlearn gcp config | grep gke_cluster | \
 axlearn gcp launch run --cluster=$CLUSTER \
         --runner_name ${RUNNER_NAME} \
         --name=${JOBSET_NAME} \
-        --instance_type="tpu-v5p-32" \
+        --instance_type=${INSTANCE_TYPE} \
         --reservation="cloudtpu-20240716121201-595617744" \
         --num_replicas=1 \
         --bundler_spec=allow_dirty=True \

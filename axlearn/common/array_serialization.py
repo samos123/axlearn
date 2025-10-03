@@ -419,12 +419,14 @@ async def _async_deserialize(
                 "gcs_request_concurrency": {"limit": 480},
             }
         )
-    t = await ts.open(tensorstore_spec, open=True, assume_metadata=False, context=context)
-    shape = tuple(t.shape if global_shape is None else global_shape)
+    shape = global_shape
     new_shard_shape = in_sharding.shard_shape(shape)
     loop = asyncio.get_running_loop()
 
     async def cb(index: array.Index, device: jax.Device):
+        t = await ts.open(tensorstore_spec, open=True, assume_metadata=False, context=context)
+        if shape is None:
+            shape = tuple(t.shape)
         logging.info(
             "received callback for index %s on device %s, gcs_path %s",
             index,

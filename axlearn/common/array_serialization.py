@@ -464,10 +464,16 @@ async def _async_deserialize(
         )
     dll = user_in_sharding.device_local_layout if isinstance(user_in_sharding, Format) else None
 
+    # gcs_grpc is 2x to 4x faster than gcs on read performance. And this is recommended by Google
+    # GCS team.
+    # Caveats:
+    #   - On AWS (or other non-GCP environments) accessing GCS, gcs_grpc may hit auth/network
+    #     issues due to cross-cloud constraints. So we enable this optimization on Pathways
+    #     which only runs on GCP for now.
     context = serialization.TS_CONTEXT
     if os.getenv("ENABLE_GCS_GRPC", "false") == "true":
         tensorstore_spec, context = use_gcs_grpc(tensorstore_spec)
-        
+
     t = await ts.open(
         tensorstore_spec,
         open=True,

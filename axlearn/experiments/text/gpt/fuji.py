@@ -918,40 +918,7 @@ def get_trainer_kwargs(
                                             save_and_offload_only_these_names_regex
                                         ).set(
                                             names_which_can_be_saved=None,
-                                            names_which_can_be_offloaded=(
-                                                RematRegexSavePatterns.INPUT.value
-                                            ),
-                                            offload_src="device",
-                                            offload_dst="pinned_host",
-                                        ),
-                                    ),
-                                }
-                            ),
-                        ],
-                    ),
-                ),
-                (
-                    "tpu-v7x-.*",
-                    ChainConfigModifier.default_config().set(
-                        config_modifiers=[
-                            MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(fsdp=-1)
-                            ),
-                            # Use the updated block size for Splash Attention
-                            V7xFlashConfigModifier.default_config(),
-                            RematSpecModifier.default_config().set(
-                                remat_policies={
-                                    "model.decoder.transformer.layer": RematSpec(
-                                        prevent_cse=False,
-                                        policy=config_for_function(
-                                            save_and_offload_only_these_names_regex
-                                        ).set(
-                                            names_which_can_be_saved=None,
-                                            names_which_can_be_offloaded="|".join(
-                                                [
-                                                    RematRegexSavePatterns.INPUT.value,
-                                                ]
-                                            ),
+                                            names_which_can_be_offloaded=None,
                                             offload_src="device",
                                             offload_dst="pinned_host",
                                         ),

@@ -10,10 +10,7 @@ from typing import Any, Callable, Optional
 import cloudpickle
 
 from axlearn.common.config import REQUIRED, TrainerConfigFn, config_class
-from axlearn.common.flash_attention.layer import (
-    BackendOverrideModifier,
-    FlashBlockSizeModifier,
-)
+from axlearn.common.flash_attention.layer import BackendOverrideModifier, FlashBlockSizeModifier
 from axlearn.common.utils import get_data_dir
 
 
@@ -62,13 +59,16 @@ class SplashAttentionConfigModifier(BackendOverrideModifier):
             "splash_block_kv_dkv": self.config.splash_block_kv_dkv,
             "splash_block_kv_dkv_compute": self.config.splash_block_kv_dkv_compute,
             "splash_block_q_dq": self.config.splash_block_q_dq,
-            "splash_block_kv_dq": self.config.splash_block_kv_dq
+            "splash_block_kv_dq": self.config.splash_block_kv_dq,
         }
-        backend_modifier: BackendOverrideModifier = BackendOverrideModifier.default_config().set(
-            backend_overrides=backend_overrides
-        ).instantiate()
+        backend_modifier: BackendOverrideModifier = (
+            BackendOverrideModifier.default_config()
+            .set(backend_overrides=backend_overrides)
+            .instantiate()
+        )
 
         return backend_modifier.__call__(cfg)
+
 
 class _DummyRequired:
     """A dummy class to return the same REQUIRED instance upon init call."""

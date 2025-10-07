@@ -80,7 +80,7 @@ class FlashAttention(GroupedQueryAttention):
                 f"{type(self.dropout).__module__}.{type(self.dropout).__qualname__}"
             )
         if cfg.tpu_block_size % 128 != 0:
-            raise ValueError("cfg.tpu_block_size must divide 128.")
+            raise ValueError("cfg.tpu_block_size must be divisible by 128.")
 
     def _create_layer_parameter_specs(self) -> dict[str, ParameterSpec]:
         cfg = self.config
@@ -406,6 +406,7 @@ class FlashBlockSizeModifier(ConfigModifier):
 
         cfg.visit(visit_fn=visit_fn, enter_fn=enter_fn)
         return cfg
+
 
 class BackendOverrideModifier(ConfigModifier):
     """Modifies the backend_overrides config of Flash Attention."""

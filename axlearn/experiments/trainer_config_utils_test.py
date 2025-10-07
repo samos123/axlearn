@@ -92,9 +92,9 @@ class TrainerConfigUtilsTest(parameterized.TestCase):
     def test_splash_attention_config_modifier(self):
         cfg: FlashDummyModel.Config = FlashDummyModel.default_config()
         cfg.layer = FlashAttention.default_config()
-        cfg_modifier = SplashAttentionConfigModifier.default_config().set(
-            splash_block_q=4096
-        ).instantiate()
+        cfg_modifier = (
+            SplashAttentionConfigModifier.default_config().set(splash_block_q=4096).instantiate()
+        )
         cfg = cfg_modifier(cfg)
         self.assertEqual(cfg.layer.backend_overrides["splash_block_q"], 4096)
 

@@ -748,11 +748,12 @@ def get_trainer_kwargs(
                                         policy=config_for_function(
                                             save_and_offload_only_these_names_regex
                                         ).set(
-                                            names_which_can_be_saved="|".join(
-                                                [
-                                                    RematRegexSavePatterns.QKV_PROJ.value
-                                                ]
-                                            ),
+                                            # names_which_can_be_saved="|".join(
+                                            #     [
+                                            #         RematRegexSavePatterns.QKV_PROJ.value
+                                            #     ]
+                                            # ),
+                                            names_which_can_be_saved=None,
                                             names_which_can_be_offloaded="|".join(
                                                 [
                                                     RematRegexSavePatterns.INPUT.value,

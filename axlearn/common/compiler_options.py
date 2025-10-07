@@ -133,15 +133,11 @@ def default_xla_options(
             # Many of the v7x flags are similar to v6e
             xla_tpu_dvfs_p_state=7,
             xla_tpu_scoped_vmem_limit_kib=65536,
-            xla_tpu_enable_sparse_core_reduce_scatter_v2="true",
-            xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
-            xla_tpu_enable_sparse_core_collective_offload_2d_all_gather="true",
             xla_tpu_enable_all_gather_offload_tracing="true",
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
             xla_enable_async_all_gather="true",
             xla_tpu_prefer_async_allgather_to_allreduce="true",
-            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
-            xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
+            xla_tpu_impure_enable_packed_bf16_math_ops="true",
         )
 
         # Ensure pipelining is properly configured
@@ -153,11 +149,15 @@ def default_xla_options(
 
         # v7x flags from MaxText, inclusing SparseCore configs
         options.update(
-            xla_tpu_use_single_sparse_core_for_all_gather_offload="true",
+            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
+            xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
+            xla_tpu_enable_sparse_core_collective_offload_2d_all_gather="true",
+            xla_tpu_enable_sparse_core_reduce_scatter_v2="true",
             xla_tpu_enable_sparse_core_collective_offload_3d_all_gather="true",
+            xla_tpu_use_single_sparse_core_for_all_gather_offload="true",
             xla_sc_disable_megacore_partitioning="true",
             xla_tpu_use_tc_device_shape_on_sc="true",
-            xla_tpu_impure_enable_packed_bf16_math_ops="true",
         )
     if num_slices > 1:
         # Support multiple TPU slices connected over a data center network.

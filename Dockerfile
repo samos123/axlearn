@@ -90,13 +90,13 @@ ENV UV_FIND_LINKS="https://storage.googleapis.com/jax-releases/libtpu_releases.h
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
 RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
-RUN export NIGHTLY=0.7.2.dev20250904 && \
-    export LIBTPU=0.0.22.dev20250904+nightly && \
+RUN export NIGHTLY=0.8.0.dev20251004 && \
+    export LIBTPU=0.0.25.dev20251004+nightly && \
     uv pip install -U --pre jax==${NIGHTLY}  jaxlib==${NIGHTLY} libtpu==${LIBTPU} requests -i https://us-python.pkg.dev/ml-oss-artifacts-published/jax/simple/ -f https://storage.googleapis.com/jax-releases/libtpu_releases.html && \
     uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
 COPY . .
-RUN uv pip install libtpu-0.0.22.dev20250904+tpu7x-cp312-cp312-manylinux_2_31_x86_64.whl
+RUN uv pip install libtpu-0.0.25.dev20251004+tpu7x-cp312-cp312-manylinux_2_31_x86_64.whl
 
 ################################################################################
 # GPU container spec.                                                          #

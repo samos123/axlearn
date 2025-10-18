@@ -383,9 +383,14 @@ def _piped_popen(cmd: str, f: str, *, env_vars: Optional[dict[str, str]] = None)
 
     # Ensure that all env var values are strings.
     env_vars_copy = {k: str(v) for k, v in env_vars_copy.items()}
-    popen = subprocess.Popen(
-        shlex.split(cmd), stdout=fd, stderr=subprocess.STDOUT, env=env_vars_copy
-    )
+    try:
+        popen = subprocess.Popen(
+            shlex.split(cmd), stdout=fd, stderr=subprocess.STDOUT, env=env_vars_copy
+        )
+    except Exception as e:
+        logging.error("SUBPROCESS FAILED TO START: %s", e, exc_info=True)
+        raise
+    return _PipedProcess(popen=popen, fd=fd)
     return _PipedProcess(popen=popen, fd=fd)
 
 

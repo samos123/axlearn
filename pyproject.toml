@@ -52,7 +52,7 @@ core = [
 # Apple Silicon dependencies.
 # Need to run `conda install -c apple tensorflow-deps` separately.
 apple-silicon = [
-    "tensorflow-metal==1.1.0; platform_machine == 'arm64'",
+    "array-record==0.8.1.1; platform_machine == 'arm64'", # Prevent mutex.cc lock
 ]
 # Requirements for testing and development.
 dev = [

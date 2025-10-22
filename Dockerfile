@@ -104,8 +104,12 @@ RUN if [ "$INSTALL_PATHWAYS_JAXLIB" = "true" ]; then \
       uv pip install --prerelease=allow "jaxlib==0.5.3.dev20250918" \
         --find-links https://storage.googleapis.com/axlearn-wheels/wheels.html; \
     fi
-COPY --from=libtpu-target:latest /wheels /wheels
-RUN uv pip install --no-deps /wheels/*.whl && uv cache clean
+RUN export NIGHTLY=0.8.1.dev20251022 && \
+    export LIBTPU=0.0.26.dev20251022+nightly && \
+    uv pip install -U --pre jax==${NIGHTLY}  jaxlib==${NIGHTLY} libtpu==${LIBTPU} requests -i https://us-python.pkg.dev/ml-oss-artifacts-published/jax/simple/ -f https://storage.googleapis.com/jax-releases/libtpu_releases.html && \
+    uv cache clean
+# COPY --from=libtpu-target:latest /wheels /wheels
+# RUN uv pip install --no-deps /wheels/*.whl && uv cache clean
 COPY . .
 
 ################################################################################

@@ -136,13 +136,12 @@ def default_xla_options(
     if version == "v7x":
         options.update(
             # Many of the v7x flags are similar to v6e
-            xla_tpu_dvfs_p_state=7,
             xla_tpu_scoped_vmem_limit_kib=65536,
             xla_tpu_enable_all_gather_offload_tracing="true",
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
             xla_enable_async_all_gather="true",
             xla_tpu_prefer_async_allgather_to_allreduce="true",
-            xla_tpu_impure_enable_packed_bf16_math_ops="true",
+            xla_tpu_bf16_emission_mode="NATIVE_EMISSION",
         )
 
         # Ensure pipelining is properly configured
@@ -153,6 +152,7 @@ def default_xla_options(
         )
 
         # v7x flags from MaxText, inclusing SparseCore configs
+        # TODO(samuel-andersen): Move v7x SparseCore config below with v6e
         options.update(
             xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
             xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
@@ -209,7 +209,9 @@ def default_xla_options(
             continue
         elif isinstance(v, str):
             # Allow numeric strings, time-based strings (e.g., "10m", "30s", "60m"), and bool str.
-            if v.isdigit() or re.match(r"^\d+[ms]$", v.strip()) or v.strip() in ["true", "false"]:
+            if v.isdigit() or re.match(r"^\d+[ms]$", v.strip()) or v.strip() in [
+                "true", "false", "NATIVE_EMISSION"
+            ]:
                 continue
             # Allow paths.
             if v.startswith("/"):

@@ -98,14 +98,13 @@ ARG INSTALL_PATHWAYS_JAXLIB=false
 
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
-RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
+RUN uv pip install -qq --prerelease=allow .[core,tpu] && uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install -qq .[$EXTRAS] && uv cache clean; fi
 RUN if [ "$INSTALL_PATHWAYS_JAXLIB" = "true" ]; then \
       uv pip install --prerelease=allow "jaxlib==0.5.3.dev20250918" \
         --find-links https://storage.googleapis.com/axlearn-wheels/wheels.html; \
     fi
-COPY --from=libtpu-target:latest /wheels /wheels
-RUN uv pip install --no-deps /wheels/*.whl && uv cache clean
+RUN uv pip install -qq --no-deps libtpu==0.0.26.dev20251022+nightly && uv cache clean
 COPY . .
 
 ################################################################################

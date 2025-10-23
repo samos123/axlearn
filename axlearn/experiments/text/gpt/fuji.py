@@ -727,11 +727,11 @@ def get_trainer_kwargs(
                     ),
                 ),
                 (
-                    "tpu-v7x-.*",
+                    "tpu-v7x-128",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
                             MeshShapeModifier.default_config().set(
-                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=-1)
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=128)
                             ),
                             # Ensure we set the default tpu_block_size=2048 on v7x
                             # With the 70B model, MaxText also modifies block_q
@@ -748,11 +748,47 @@ def get_trainer_kwargs(
                                         policy=config_for_function(
                                             save_and_offload_only_these_names_regex
                                         ).set(
-                                            # names_which_can_be_saved="|".join(
-                                            #     [
-                                            #         RematRegexSavePatterns.QKV_PROJ.value
-                                            #     ]
-                                            # ),
+                                            names_which_can_be_saved="|".join(
+                                                [
+                                                    RematRegexSavePatterns.QKV_PROJ.value
+                                                ]
+                                            ),
+                                            names_which_can_be_offloaded="|".join(
+                                                [
+                                                    RematRegexSavePatterns.INPUT.value,
+                                                ]
+                                            ),
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
+                (
+                    "tpu-v7x-256",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=128)
+                            ),
+                            # Ensure we set the default tpu_block_size=2048 on v7x
+                            # With the 70B model, MaxText also modifies block_q
+                            # and block_kv_compute to 4096 and 1024 respectively
+                            V7xFlashConfigModifier.default_config(),
+                            SplashAttentionConfigModifier.default_config().set(
+                                splash_block_q=4096,
+                                splash_block_kv_compute=1024,
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=config_for_function(
+                                            save_and_offload_only_these_names_regex
+                                        ).set(
                                             names_which_can_be_saved=None,
                                             names_which_can_be_offloaded="|".join(
                                                 [

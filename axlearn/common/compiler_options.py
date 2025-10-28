@@ -87,8 +87,6 @@ def default_xla_options(
             xla_latency_hiding_scheduler_rerun=2,
             # Improved performance for v6e.
             xla_tpu_scoped_vmem_limit_kib=98304,
-            # For megascale performance.
-            xla_jf_crs_combiner_threshold_count=10,
             # Disable collective matmul. Collective matmul could negatively affect performance in
             # some cases. Even in cases where collective matmul provides gains, the gains are
             # marginal on v6e due to the high arithmetic intensity.
@@ -106,8 +104,9 @@ def default_xla_options(
         # fusion and allreduce SC offloading by default.
         options.update(
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="true",
-            # Always enable SparseCore offloading for allreduce.
-            xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+            # Allreduce SparseCore offloading leads to quality discrepancy on v6e in JAX 0.6.2.
+            # TODO(changlan): Review and enable it later.
+            # xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
         )
 
         options.update(
@@ -455,7 +454,9 @@ def infer_xla_performance_flags(
                 xla_tpu_enable_async_collective_fusion_fuse_reduce_scatter="false",
                 xla_tpu_enable_sparse_core_collective_offload_all_gather="true",
                 xla_tpu_enable_sparse_core_collective_offload_reduce_scatter="true",
-                xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
+                # Allreduce SparseCore offloading leads to quality discrepancy on v6e in JAX 0.6.2.
+                # TODO(changlan): Review and enable it later.
+                # xla_tpu_enable_sparse_core_collective_offload_all_reduce="true",
                 xla_tpu_enable_all_gather_offload_tracing="true",
                 xla_tpu_enable_reduce_scatter_offload_tracing="true",
                 xla_tpu_enable_all_reduce_offload_tracing="true",

@@ -63,9 +63,9 @@ _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
 # The container name of pathways proxy.
 _PATHWAYS_PROXY_CONTAINER_NAME = "pathways-proxy"
 # The k8s replicatedJob name for pathways-head pods.
-_PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pathways-head"
+_PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pwhd"
 # The k8s replicatedJob name for pathways-worker pods.
-_PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
+_PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pwwk"
 
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
 _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
@@ -439,17 +439,12 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
             labels.update({BASTION_JOB_VERSION_LABEL: os.environ.get(BASTION_JOB_VERSION_ENV_VAR)})
 
         volumes.append(dict(name="shared-output", emptyDir={}))
-        volumes.append(dict(name="shared-memory", emptyDir=dict(medium="Memory")))
-
         if cfg.gcsfuse_mount:
-            annotations.update(
-                {
-                    "gke-gcsfuse/volumes": "true",
-                    "gke-gcsfuse/cpu-limit": cfg.gcsfuse_mount.cpu,
-                    "gke-gcsfuse/memory-limit": cfg.gcsfuse_mount.memory,
-                    "gke-gcsfuse/ephemeral-storage-limit": cfg.gcsfuse_mount.ephemeral_gb,
-                }
-            )
+            self._inner.set_up_gcsfuse(cfg, volumes, annotations)
+        else:
+            # gcsfuse mounts shared-memory. To avoid double mounting, we only mount
+            # shared-memory explicitly when gcsfuse_mount is not enabled.
+            volumes.append(dict(name="shared-memory", emptyDir=dict(medium="Memory")))
 
         node_selector = {
             _PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY: _PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE,

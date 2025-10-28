@@ -233,6 +233,8 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, expert=16, fsdp=16)
                             ),
+                            # Use the updated block size for Splash Attention
+                            V7xFlashConfigModifier.default_config(),
                             RematSpecModifier.default_config().set(
                                 remat_policies={
                                     "model.decoder.transformer.layer": RematSpec(

@@ -10,6 +10,7 @@
 
 from dataclasses import dataclass
 
+# pylint: disable=invalid-name
 AcceleratorType = {"TPU": 1, "GPU": 2, "CPU": 3}
 
 
@@ -530,6 +531,7 @@ GCE_MACHINE_TYPE_TO_MEMORY_CHARACTERISTICS = {
     "ct4p-hightpu-4t": 407,
     "ct5lp-hightpu-4t": 192,
     "ct6e-standard-4t": 720,
+    "tpu7x-standard-4t": 960,
 }
 
 # Reference doc https://cloud.google.com/kubernetes-engine/docs/concepts/plan-tpus
@@ -537,6 +539,7 @@ GCE_MACHINE_TYPE_TO_CPU_CHARACTERISTICS = {
     "ct5p-hightpu-4t": 208,
     "ct4p-hightpu-4t": 240,
     "ct6e-standard-4t": 180,
+    "tpu7x-standard-4t": 224,
 }
 
 

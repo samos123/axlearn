@@ -140,7 +140,8 @@ def default_xla_options(
             xla_tpu_enable_async_collective_fusion_fuse_all_gather="false",
             xla_enable_async_all_gather="true",
             xla_tpu_prefer_async_allgather_to_allreduce="true",
-            xla_tpu_bf16_emission_mode="NATIVE_EMISSION",
+            # This flag does not work on pathways
+            # xla_tpu_bf16_emission_mode="NATIVE_EMISSION",
         )
 
         # Ensure pipelining is properly configured
@@ -208,9 +209,11 @@ def default_xla_options(
             continue
         elif isinstance(v, str):
             # Allow numeric strings, time-based strings (e.g., "10m", "30s", "60m"), and bool str.
-            if v.isdigit() or re.match(r"^\d+[ms]$", v.strip()) or v.strip() in [
-                "true", "false", "NATIVE_EMISSION"
-            ]:
+            if (
+                v.isdigit()
+                or re.match(r"^\d+[ms]$", v.strip())
+                or v.strip() in ["true", "false", "NATIVE_EMISSION"]
+            ):
                 continue
             # Allow paths.
             if v.startswith("/"):

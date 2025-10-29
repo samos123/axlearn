@@ -49,14 +49,12 @@ _PATHWAYS_WORKER_PORT = 29001
 # There is no guarantee that this image will work with newer Jax releases.
 # This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
 # This image extends GRPC timeout for long context models.
-_PATHWAYS_IMAGE_TAG = "shm_proxy_settings"
 # The docker image used by pathways proxy container.
-_PATHWAYS_PROXY_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
-)
+# pylint: disable=line-too-long
+_PATHWAYS_PROXY_IMAGE = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/proxy_server:2025-10-29-increased-grpc-timeout"
 # The docker image used by pathways resource manager container and worker container.
 _PATHWAYS_SERVER_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
+    "us-docker.pkg.dev/cloud-tpu-v2-images/pathways-colocated-python/server:2025-10-29"
 )
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
@@ -95,6 +93,8 @@ def get_pathways_tpu_version(gke_machine_type: str) -> str:
     https://github.com/google/pathways-job/blob/4417de7aa23d3c2316e400a3a327512834374475/internal/controller/pathwaysjob_controller.go#L70-L82
     """
     pathways_tpu_devices = {
+        # v7x
+        "tpu7x-standard-4t": "tpu7x",
         # v6e
         "ct6e-standard-4t": "tpuv6e",
         # v5p
@@ -108,7 +108,7 @@ def get_pathways_tpu_version(gke_machine_type: str) -> str:
 
 
 def get_megascale_options(
-    xla_options: dict[str, Union[str, bool, int]]
+    xla_options: dict[str, Union[str, bool, int]],
 ) -> dict[str, Union[str, bool, int]]:
     """Filters XLA options for those pertaining to Megascale.
 
@@ -123,7 +123,7 @@ def get_megascale_options(
 
 
 def get_xla_options(
-    xla_options: dict[str, Union[str, bool, int]]
+    xla_options: dict[str, Union[str, bool, int]],
 ) -> dict[str, Union[str, bool, int]]:
     """Filters XLA options for those starting with 'xla_'.
 
@@ -312,28 +312,28 @@ class PathwaysReplicatedJob(BaseReplicatedJob):
         )
 
         # pylint: disable=line-too-long
-        env_list.append(
-            {
-                "name": "NUM_REPLICAS",
-                "valueFrom": {
-                    "fieldRef": {
-                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']"
-                    }
-                },
-            }
-        )
+        # env_list.append(
+        #     {
+        #         "name": "NUM_REPLICAS",
+        #         "valueFrom": {
+        #             "fieldRef": {
+        #                 "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/replicatedjob-replicas']"
+        #             }
+        #         },
+        #     }
+        # )
         # pylint: enable=line-too-long
 
-        env_list.append(
-            {
-                "name": "REPLICA_ID",
-                "valueFrom": {
-                    "fieldRef": {
-                        "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
-                    }
-                },
-            }
-        )
+        # env_list.append(
+        #     {
+        #         "name": "REPLICA_ID",
+        #         "valueFrom": {
+        #             "fieldRef": {
+        #                 "fieldPath": "metadata.annotations['jobset.sigs.k8s.io/job-index']"
+        #             }
+        #         },
+        #     }
+        # )
 
         head_container["env"] = env_list
 
@@ -976,9 +976,9 @@ class PathwaysLeaderWorkerTemplate(BaseLeaderWorkerTemplate):
             ],
             imagePullPolicy="Always",
             resources=resources,
-            ports=[dict(containerPort=self.config.target_port)]
-            if self.config.enable_service
-            else [],
+            ports=(
+                [dict(containerPort=self.config.target_port)] if self.config.enable_service else []
+            ),
         )
 
     def build_leader_pod(self) -> Nested[Any]:

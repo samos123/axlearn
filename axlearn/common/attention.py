@@ -999,6 +999,85 @@ class FusedQKVLinear(BaseQKVLinear):
         return self.Output(query=q_proj, key=k_proj, value=v_proj)
 
 
+class FusedGateUpLinear(BaseLayer):
+    """Maps input to fused gate and up projections.
+
+    This layer is intended to be used in TransformerFeedForwardLayer when activation is a tuple
+    (e.g. SwiGLU). It computes [batch, ..., 2, hidden_dim] in a single einsum.
+    """
+
+    @config_class
+    class Config(BaseLayer.Config):
+        """Configures FusedGateUpLinear."""
+
+        # The layer used to project.
+        layer: Linear.Config = Linear.default_config()
+
+    def __init__(self, cfg: Config, *, parent: Module):
+        super().__init__(cfg, parent=parent)
+        self._add_child("linear", cfg.layer)
+
+    def create_parameter_specs_recursively(self) -> NestedParameterSpec:
+        specs = VDict(**super().create_parameter_specs_recursively())
+
+        def transform_factorization_spec(
+            spec: Optional[FactorizationSpec],
+        ) -> Optional[FactorizationSpec]:
+            if spec is None:
+                return None
+            return FactorizationSpec(axes=[None] + list(spec.axes))
+
+        return jax.tree.map(
+            lambda spec: ParameterSpec(
+                dtype=spec.dtype,
+                shape=(2, *spec.shape),
+                mesh_axes=PartitionSpec(None, *spec.mesh_axes),
+                factorization=transform_factorization_spec(spec.factorization),
+                fan_axes=param_init.maybe_prepend_axis(
+                    spec.fan_axes, axis_type=param_init.FanAxes.AxisType.BATCH_AXIS
+                ),
+            ),
+            specs,
+        )
+
+    def initialize_parameters_recursively(
+        self, prng_key: Tensor, *, prebuilt: Optional[Nested[Optional[ParameterSpec]]] = None
+    ) -> NestedTensor:
+        if self._use_prebuilt_params(prebuilt):
+            return jax.tree.map(lambda _: None, prebuilt)
+
+        def init(prng_key_i):
+            return VDict(linear=self.linear.initialize_parameters_recursively(prng_key_i))
+
+        return jax.vmap(init)(split_prng_key(prng_key, 2).keys)
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Computes fused gate and up projections.
+
+        Args:
+            x: Input tensor of shape [..., input_dim].
+
+        Returns:
+            Tensor of shape [..., 2, output_dim].
+        """
+        with child_context("linear"):
+            params = self.linear.parameters
+            # x: ...d
+            # weight: 2, d, h
+            # output: ...2h
+            # Einsum: ...d, pdh -> ...ph
+            output = self.linear.einsum_maybe_quantized(
+                "...d,pdh->...ph", activation=x, kernel=params["weight"]
+            )
+
+            if self.linear.config.bias:
+                # bias: [2, output_dim]
+                # output: [..., 2, output_dim]
+                output += params["bias"]
+
+        return output
+
+
 class FusedGroupedQKVLinear(BaseQKVLinear):
     """Maps input query, key, and value to multi-headed query, key, and value using a fused weight.
 
@@ -3243,6 +3322,9 @@ class TransformerFeedForwardLayer(BaseLayer):
         # TODO(tlei3): deprecate this feature since we use TensorStats.
         add_value_rms_norm_summary: Sequence[str] = []
 
+        # If True, and activation is a tuple of length 2, use a fused linear layer.
+        fuse_gate_up_proj: bool = False
+
     def __init__(self, cfg: Config, *, parent: Module):
         super().__init__(cfg, parent=parent)
         cfg: TransformerFeedForwardLayer.Config = self.config
@@ -3270,12 +3352,18 @@ class TransformerFeedForwardLayer(BaseLayer):
             hidden_dim = cfg.hidden_dim.set(input_dim=cfg.input_dim).instantiate()
         if isinstance(cfg.activation, tuple):
             assert len(cfg.activation) == 2, cfg.activation
-            # Create a linear1 projection for each activation.
-            for i in range(len(cfg.activation)):
-                self._add_child(
-                    f"linear1_{i}",
-                    cfg.linear1.set(input_dim=cfg.input_dim, output_dim=hidden_dim),
-                )
+            if cfg.fuse_gate_up_proj:
+                # Create fused linear layer.
+                fused_cfg = FusedGateUpLinear.default_config()
+                fused_cfg.layer = cfg.linear1.set(input_dim=cfg.input_dim, output_dim=hidden_dim)
+                self._add_child("linear1_fused", fused_cfg)
+            else:
+                # Create a linear1 projection for each activation.
+                for i in range(len(cfg.activation)):
+                    self._add_child(
+                        f"linear1_{i}",
+                        cfg.linear1.set(input_dim=cfg.input_dim, output_dim=hidden_dim),
+                    )
         else:
             assert isinstance(cfg.activation, str), cfg.activation
             self._add_child(
@@ -3379,13 +3467,23 @@ class TransformerFeedForwardLayer(BaseLayer):
     def _linear1_activation(self, x: Tensor) -> Tensor:
         cfg = self.config
         if isinstance(cfg.activation, tuple):
-            activations = [
-                self._get_activation(
-                    self._remat_name(self.children[f"linear1_{i}"](x), f"linear1_{i}"),
-                    activation_fn_name=activation,
-                )
-                for i, activation in enumerate(cfg.activation)
-            ]
+            if cfg.fuse_gate_up_proj:
+                fused_out = self.linear1_fused(x)  # [..., 2, hidden_dim]
+                activations = [
+                    self._get_activation(
+                        self._remat_name(fused_out[..., i, :], f"linear1_{i}"),
+                        activation_fn_name=activation,
+                    )
+                    for i, activation in enumerate(cfg.activation)
+                ]
+            else:
+                activations = [
+                    self._get_activation(
+                        self._remat_name(self.children[f"linear1_{i}"](x), f"linear1_{i}"),
+                        activation_fn_name=activation,
+                    )
+                    for i, activation in enumerate(cfg.activation)
+                ]
             assert len(activations) == 2, cfg.activation
             outputs = activations[0] * activations[1]
             self._add_tensor_stats("linear1_0_outputs", activations[0])

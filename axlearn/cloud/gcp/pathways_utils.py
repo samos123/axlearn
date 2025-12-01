@@ -49,15 +49,11 @@ _PATHWAYS_WORKER_PORT = 29001
 # There is no guarantee that this image will work with newer Jax releases.
 # This image version extends GRPC timeout for long context models, based on jax-0.5.3-patch060625
 # This image extends GRPC timeout for long context models.
-_PATHWAYS_IMAGE_TAG = "shm_proxy_settings"
 # The docker image used by pathways proxy container.
-_PATHWAYS_PROXY_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
-)
+_PATHWAYS_PROXY_IMAGE = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:latest"
 # The docker image used by pathways resource manager container and worker container.
-_PATHWAYS_SERVER_IMAGE = (
-    f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:{_PATHWAYS_IMAGE_TAG}"
-)
+_PATHWAYS_SERVER_IMAGE = "us-docker.pkg.dev/cloud-tpu-v2-images/pathways/server:latest"
+
 # The container name of pathways resourcemanager.
 _PATHWAYS_RESOURCE_MANAGER_CONTAINER_NAME = "pathways-rm"
 # The container name of pathways proxy.

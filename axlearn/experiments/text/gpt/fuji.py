@@ -90,7 +90,7 @@ VOCAB_SIZE = {
 MAX_SEQUENCE_LENGTH = {
     Version.V1: 2048,
     Version.V2: 4096,
-    Version.V3: 8192,
+    Version.V3: 16384,
     Version.V3_TIKTOKEN: 8192,
 }
 
@@ -292,6 +292,7 @@ def get_trainer_kwargs(
     max_step = TOTAL_TOKENS[version][model_size] // tokens_per_batch
     max_sequence_length = MAX_SEQUENCE_LENGTH[version]
     train_batch_size = tokens_per_batch // max_sequence_length
+    train_batch_size = 256
 
     # Whether to use grouped query attention.
     num_kv_heads = None
@@ -376,8 +377,31 @@ def get_trainer_kwargs(
             max_sequence_length=max_sequence_length,
             train_batch_size=train_batch_size,
             max_step=max_step,
-            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
+            mesh_shape=mesh_shape_from_axes(data=-1, fsdp=32),
             mesh_rules=(
+                (
+                    "tpu-v5p-.*",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=32)
+                            ),
+                            RematSpecModifier.default_config().set(
+                                remat_policies={
+                                    "model.decoder.transformer.layer": RematSpec(
+                                        prevent_cse=False,
+                                        policy=save_and_offload_only_these_names_regex(
+                                            names_which_can_be_offloaded=None,
+                                            names_which_can_be_saved=None,
+                                            offload_src="device",
+                                            offload_dst="pinned_host",
+                                        ),
+                                    ),
+                                }
+                            ),
+                        ],
+                    ),
+                ),
                 (
                     "neuron-(trn2|trn2n).48xlarge-64",
                     ChainConfigModifier.default_config().set(
@@ -912,7 +936,7 @@ def model_config(
     vocab_size: int,
     rope_theta: float,
     shared_lm_head: bool,
-    dropout_rate: float = 0.0,
+    dropout_rate: float = 0.5,
     ffn_dim: Optional[Union[int, config.FunctionConfigBase]] = None,
     flash_attention: bool = False,
     stack_cfg: Optional[BaseStackedTransformerLayer.Config] = None,

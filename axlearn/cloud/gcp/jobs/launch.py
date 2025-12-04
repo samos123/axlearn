@@ -376,7 +376,6 @@ class BaseBastionManagedJob(FlagConfigurable):
         from_vm = running_from_vm()
 
         if not from_vm:
-            os.environ["BASTION_TIER"] = "disabled"
             self._bundler.bundle(cfg.name)
 
         # Check for group membership if --project_id is provided.

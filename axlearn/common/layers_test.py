@@ -26,6 +26,8 @@ import torch
 from absl.testing import absltest, parameterized
 from jax import nn
 from jax import numpy as jnp
+from jax.experimental import mesh_utils
+from jax.sharding import Mesh, NamedSharding, PartitionSpec
 from sklearn.metrics import precision_score as sklearn_precision_score
 from sklearn.metrics import recall_score as sklearn_recall_score
 
@@ -57,6 +59,7 @@ from axlearn.common.layers import (
     UnitNormLinear,
     VariationalNoise,
     _compute_moments_with_paddings,
+    dropout,
     get_activation_fn,
     get_stochastic_depth_linear_rate,
     set_bias_recursively,
@@ -1593,6 +1596,40 @@ class SetConfigTest(TestCase):
         set_layer_norm_eps_recursively(cfg, 1e-5)
         self.assertEqual(1e-5, cfg.transformer.layer.self_attention.norm.eps)
         self.assertEqual(1e-5, cfg.transformer.layer.feed_forward.norm.eps)
+
+
+class DropoutTest(TestCase):
+    """Tests for dropout and get_dropout_mask functions."""
+
+    def test_dropout_with_sharding(self):
+        """Test that dropout mask inherits sharding from input tensor."""
+        mesh_axis_names = ("data", "model")
+        mesh_shape = (8, 1)
+        mesh = Mesh(mesh_utils.create_device_mesh(mesh_shape), mesh_axis_names)
+
+        batch_size, seq_len, hidden_dim = 128, 16384, 6656
+        sharding = NamedSharding(mesh, PartitionSpec("data", None, None))
+        x = jnp.ones((batch_size, seq_len, hidden_dim), device=sharding)
+
+        prng_key = jax.random.PRNGKey(0)
+        rate = 0.1
+        with mesh:
+            hlo = (
+                jax.jit(dropout, static_argnames="rate")
+                .lower(x, rate=rate, prng_key=prng_key)
+                .as_text()
+            )
+            print("StableHLO")
+            print(hlo)
+            compiled = (
+                jax.jit(dropout, static_argnames="rate")
+                .lower(x, rate=rate, prng_key=prng_key)
+                .compile()
+            )
+            print("Compiled HLO")
+            print(compiled.as_text())
+            out = jax.jit(dropout, static_argnames="rate")(x, rate=rate, prng_key=prng_key)
+            out.block_until_ready()
 
 
 if __name__ == "__main__":

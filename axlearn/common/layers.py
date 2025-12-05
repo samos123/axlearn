@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional, Union
 
 import jax
 from absl import logging
-from jax import nn
+from jax import lax, nn
 from jax import numpy as jnp
 from jax.sharding import PartitionSpec
 
@@ -164,7 +164,20 @@ def dropout(
     if mask is None:
         if prng_key is None:
             raise ValueError("prng_key must be provided when mask is not specified.")
-        mask = get_dropout_mask(x.shape, prng_key=prng_key, rate=rate)
+
+        # Instead of generating the full (Batch, Seq, Dim) mask at once,
+        # we generate it row-by-row. This prevents HBM OOM.
+        n_batches = x.shape[0]
+        row_shape = x.shape[1:]
+
+        def process_row(key, _):
+            # Split key for this step
+            step_key, subkey = jax.random.split(key)
+            # Generate mask for just this row
+            step_mask = jax.random.bernoulli(subkey, rate, row_shape)
+            return step_key, step_mask
+
+        _, mask = lax.scan(process_row, prng_key, None, length=n_batches)
     return jnp.where(mask, 0, x) / (1 - rate)
 
 

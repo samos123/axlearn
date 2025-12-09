@@ -126,6 +126,7 @@ def get_trainer_kwargs(
     vocab_size: int,
     max_sequence_length: int,
     flash_attention: bool,
+    moe_backend: Literal["dense", "megablox"] = "dense",
 ) -> dict[str, Any]:
     """Construct default trainer kwargs given a model size."""
     tokens_per_batch = 8 * (1024**2)  # 8M tokens.
@@ -348,7 +349,10 @@ def get_trainer_kwargs(
 
     mesh_shape = merged_trainer_kwargs.get("mesh_shape", mesh_shape_from_axes(data=-1))
     merged_trainer_kwargs["model_cfg"] = model_config(
-        flash_attention=flash_attention, mesh_shape=mesh_shape, **model_kwargs
+        flash_attention=flash_attention,
+        mesh_shape=mesh_shape,
+        moe_backend=moe_backend,
+        **model_kwargs,
     )
     # If a model is smaller than the base model, do not scale.
     linear_layer_lr_multiplier = min(_BASE_MODEL_HIDDEN_DIM / model_kwargs["hidden_dim"], 1.0)
@@ -379,6 +383,7 @@ def model_config(
     dropout_rate: float = 0.0,
     flash_attention: bool = False,
     mesh_shape: Union[MeshShape, HybridMeshShape],
+    moe_backend: Literal["dense", "megablox"] = "dense",
     **kwargs,
 ) -> causal_lm.Model.Config:
     """Returns an LM model config based on the given hyperparams.
@@ -439,6 +444,7 @@ def model_config(
         input_dim=hidden_dim,
         num_groups=num_groups,
         dim_to_mesh_axis_map=MOE_DIM_TO_MESH_AXIS_MAP,
+        backend=moe_backend,
     )
     expert_config.gating.train_capacity_factor = train_capacity_factor
 

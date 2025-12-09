@@ -16,7 +16,7 @@ Reference: https://arxiv.org/abs/2405.15052.
 
 import re
 from functools import reduce
-from typing import NamedTuple, Optional, Sequence, Union
+from typing import Literal, NamedTuple, Optional, Sequence, Union
 
 import jax
 import jax.numpy as jnp
@@ -24,6 +24,7 @@ import numpy as np
 from absl import logging
 from jax.experimental.pjit import pjit
 
+from axlearn.common import megablox
 from axlearn.common.attention import NormPosition
 from axlearn.common.base_layer import BaseLayer, ParameterSpec
 from axlearn.common.config import (
@@ -282,6 +283,7 @@ class BaseGating(BaseLayer):
         O: outer batch size
         G: number of groups
         S: per group size
+        K: top-k
         E: number of experts
         C: capacity per expert
         M: model_dim (same as input_dim and output_dim as in FF layer)
@@ -296,6 +298,8 @@ class BaseGating(BaseLayer):
         num_experts: Required[int] = REQUIRED
 
     class Output(NamedTuple):
+        """Outputs of BaseGating."""
+
         # A OG`SEC tensor for combining expert outputs.
         combine_tensor: Tensor
         # A OG`SEC tensor, scattering/dispatching inputs to experts.
@@ -304,6 +308,10 @@ class BaseGating(BaseLayer):
         load_balance_loss: Optional[Tensor] = None
         # Router z loss, for encouraging router logits to remain small.
         router_z_loss: Optional[Tensor] = None
+        # [O, G, S, K] Top-k expert indices.
+        top_k_indices: Optional[Tensor] = None
+        # [O, G, S, K] Top-k expert gates.
+        top_k_gates: Optional[Tensor] = None
 
     def forward(self, logits: Tensor) -> NestedTensor:
         """Forward pass of gating.
@@ -504,6 +512,8 @@ class Top2Gating(BaseGating):
             dispatch_tensor=dispatch_tensor,
             load_balance_loss=aux_loss,
             router_z_loss=router_z_loss,
+            top_k_indices=jnp.stack([index_1, index_2], axis=-1),
+            top_k_gates=jnp.stack([gate_1, gate_2], axis=-1),
         )
 
 
@@ -699,6 +709,8 @@ class TopKGating(BaseGating):
             dispatch_tensor=dispatch_tensor,
             load_balance_loss=aux_loss,
             router_z_loss=router_z_loss,
+            top_k_indices=jnp.stack(index_list, axis=-1),
+            top_k_gates=jnp.stack(gates_list, axis=-1),
         )
 
 
@@ -752,6 +764,11 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
         load_balance_loss_weight: float = 0.01
         # Weight for the router z loss. https://arxiv.org/abs/2202.08906.
         router_z_loss_weight: float = 0.0
+        # Backend to use for computation, "dense" (default) or "megablox".
+        backend: Literal["dense", "megablox"] = "dense"
+        # Tiling configuration for megablox backend. Default is (128, 128, 128).
+        # Users can tune this (e.g., to (1024, 1024, 1024)) for better performance on large shapes.
+        megablox_tiling: tuple[int, int, int] = (128, 128, 128)
 
         # SPMD partition params used to represent the MoE layer dimensions.
         # O - outer batch dim
@@ -932,28 +949,153 @@ class TransformerFeedForwardMoE(DenseGeneralBaseLayer):
             + gating.router_z_loss * cfg.router_z_loss_weight
         )
         self.add_module_output("aux_loss", aux_loss)
-        combine_tensor = gating.combine_tensor.astype(input_dtype)
-        dispatch_tensor = gating.dispatch_tensor.astype(input_dtype)
-        combine_tensor = with_sharding_constraint(combine_tensor, cfg.dim_to_mesh_axis_map["ogsec"])
-        dispatch_tensor = with_sharding_constraint(
-            dispatch_tensor, cfg.dim_to_mesh_axis_map["ogsec"]
-        )
-        x = jnp.einsum("ogsec,ogsm->oegcm", dispatch_tensor, x)
-        x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
-        x = self._wi_activation(x)
-        if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
-            x = self.dropout1(x)
-        with child_context("wo_einsum", module=self):
-            x = self.einsum_maybe_quantized(
-                "oegch,ehm->oegcm", activation=x, kernel=self.parameters["wo_weight"]
+
+        if cfg.backend == "megablox":
+            x = self._dispatch_and_combine_megablox(x, gating)
+        else:
+            combine_tensor = gating.combine_tensor.astype(input_dtype)
+            dispatch_tensor = gating.dispatch_tensor.astype(input_dtype)
+            combine_tensor = with_sharding_constraint(
+                combine_tensor, cfg.dim_to_mesh_axis_map["ogsec"]
             )
-        x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
-        x = jnp.einsum("oegcm->ogecm", x)
-        x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogecm"])
-        x = jnp.einsum("ogecm,ogsec->ogsm", x, combine_tensor)
+            dispatch_tensor = with_sharding_constraint(
+                dispatch_tensor, cfg.dim_to_mesh_axis_map["ogsec"]
+            )
+            x = jnp.einsum("ogsec,ogsm->oegcm", dispatch_tensor, x)
+            x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
+            x = self._wi_activation(x)
+            if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
+                x = self.dropout1(x)
+            with child_context("wo_einsum", module=self):
+                x = self.einsum_maybe_quantized(
+                    "oegch,ehm->oegcm", activation=x, kernel=self.parameters["wo_weight"]
+                )
+            x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["oegcm"])
+            x = jnp.einsum("oegcm->ogecm", x)
+            x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogecm"])
+            x = jnp.einsum("ogecm,ogsec->ogsm", x, combine_tensor)
+
         x = with_sharding_constraint(x, cfg.dim_to_mesh_axis_map["ogsm"])
         # (batch, seq_len, input_dim)
         return x.reshape(token_shape + (cfg.input_dim,))
+
+    def _dispatch_and_combine_megablox(self, x: Tensor, gating: BaseGating.Output) -> Tensor:
+        """Megablox dispatch and combine."""
+        cfg = self.config
+        # [O, G, S, K].
+        top_k_indices = gating.top_k_indices
+        top_k_gates = gating.top_k_gates
+        k = top_k_indices.shape[-1]
+
+        # Flatten x to [O, G, S, M].
+        o, g, s, m = x.shape
+        e = cfg.num_experts
+
+        # Flatten batch dims: [O * G * S, M].
+        x_flat = x.reshape(-1, m)
+        indices_flat = top_k_indices.reshape(-1, k)  # [N, K]
+        gates_flat = top_k_gates.reshape(-1, k)
+
+        # Replicate tokens K times.
+        # We process N*K assignments.
+        # token_ids[i] = i // k
+
+        # [N*K] expert indices.
+        assignments = indices_flat.reshape(-1)
+
+        # Sort by expert index.
+        temp_sort = jnp.argsort(assignments)
+        sorted_assignments = assignments[temp_sort]
+
+        # Original token indices corresponding to sorted assignments.
+        # [N*K].
+        sorted_token_ids = temp_sort // k
+
+        # Gather inputs.
+        # [N*K, M].
+        lhs = x_flat[sorted_token_ids]
+
+        # Compute group sizes (assignments per expert).
+        # We need group_sizes for all experts 0..E-1.
+        # We can use jnp.bincount, but we need to ensure size E.
+        group_sizes = jnp.bincount(sorted_assignments, length=e).astype(jnp.int32)
+
+        # Prepare experts params.
+        # Current wi params are [E, M, H].
+        # If we have multiple activations (glu), we might have [2, E, M, H].
+        # TransformerFeedForwardMoE stores params as "wi_weight" or "wi_0_weight", "wi_1_weight".
+
+        def _get_kernel(name):
+            return self.parameters[name]
+
+        # Use helper to abstract activation logic.
+        # We need to adapt _wi_activation to work with ragged inputs?
+        # _wi_activation expects [O, E, G, C, M] or [O, E, G, C, H]?
+        # But here we have [TotalTokens, M].
+        # We can just use the flat kernel.
+
+        activations = []
+        if isinstance(cfg.activation, tuple):
+            for i, activation in enumerate(cfg.activation):
+                # [E, M, H]
+                wi = _get_kernel(f"wi_{i}_weight")
+                # gmm expects [M, K] lhs and [NumGroups, K, N] rhs.
+                # Here lhs [N*K, M], rhs [E, M, H].
+                # We need to clarify gmm signature.
+                # gmm(lhs, rhs, group_sizes)
+                # lhs: [Tokens, M]
+                # rhs: [E, M, H]
+                # group_sizes: [E]
+                with child_context(f"wi_{i}_einsum", module=self):
+                    out = megablox.gmm(
+                        lhs, wi, group_sizes, tiling=cfg.megablox_tiling
+                    )  # [Tokens, H]
+
+                out = get_activation_fn(activation)(out)
+                activations.append(out)
+            hidden = activations[0] * activations[1]
+        else:
+            wi = _get_kernel("wi_weight")
+            with child_context("wi_einsum", module=self):
+                hidden = megablox.gmm(lhs, wi, group_sizes)
+            hidden = get_activation_fn(cfg.activation)(hidden)
+
+        # Apply dropout1 if needed.
+        if cfg.structure in ["prenorm", "hybridnorm", "nonorm", "v2"]:
+            # Dropout expects specific shape? Dropout is elementwise.
+            # but we need rng key.
+            hidden = self.dropout1(hidden)
+
+        # wo: [E, H, M].
+        wo = _get_kernel("wo_weight")
+
+        with child_context("wo_einsum", module=self):
+            # lhs [Tokens, H], rhs [E, H, M].
+            # gmm -> [Tokens, M].
+            out = megablox.gmm(hidden, wo, group_sizes, tiling=cfg.megablox_tiling)
+
+        # Now we have [N*K, M]. We need to route back to [N, M].
+        # Weight by gates.
+        # gates_flat: [N*K].
+        # We need to shuffle gates to match sorted_token_ids?
+        # temp_sort maps "rank in sorted array" -> "original index in flattened N*K array".
+        # We need gates corresponding to the entries in `out`.
+        # `out` corresponds to `sorted_assignments`.
+        # `sorted_gates` = flattened_gates[temp_sort].
+
+        flat_gates = gates_flat.reshape(-1)
+        sorted_gates = flat_gates[temp_sort]
+        out = out * sorted_gates[:, None]
+
+        # Now scatter add back to tokens.
+        # We want result[token_id] += out[i].
+        # sorted_token_ids is the token_id for each row of out.
+        # We can use jax.ops.segment_sum.
+        # shape [N, M]
+        final_out = jax.ops.segment_sum(out, sorted_token_ids, num_segments=o * g * s)
+
+        # Reshape to [O, G, S, M]
+        return final_out.reshape(o, g, s, m)
 
     def _wi_activation(self, x: Tensor) -> Tensor:
         cfg = self.config
